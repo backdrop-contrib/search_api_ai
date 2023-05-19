@@ -1,0 +1,7 @@
+search_api_explorer.search:
+  path: '/admin/config/openai/search-api-ai-explorer'
+  defaults:
+    _title: 'Search API AI Explorer'
+    _form: 'Drupal\search_api_ai_explorer\Form\SearchForm'
+  requirements:
+    _permission: 'administer site configuration'

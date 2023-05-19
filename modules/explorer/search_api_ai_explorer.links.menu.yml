@@ -1,0 +1,5 @@
+search_api_explorer.search:
+  title: Search API AI Search
+  description: Contains a form where you can run ChatGPT using Search API AID as an embedding backend.
+  parent: openai.admin_config_openai
+  route_name: search_api_explorer.search

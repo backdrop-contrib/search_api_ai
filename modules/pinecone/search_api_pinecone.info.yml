@@ -1,0 +1,8 @@
+name: 'Search API Pinecone'
+type: module
+description: 'Provide a Pinecone backend for Search API.'
+package: Search
+core_version_requirement: ^9 || ^10
+dependencies:
+  - openai:openai_embeddings
+  - search_api_ai:search_api_ai
