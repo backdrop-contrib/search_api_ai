@@ -2,9 +2,12 @@
 
 namespace Drupal\search_api_pinecone\Plugin\search_api\backend;
 
+use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Plugin\PluginFormInterface;
 use Drupal\openai_embeddings\Http\PineconeClient;
 use Drupal\search_api\Backend\BackendPluginBase;
 use Drupal\search_api\IndexInterface;
+use Drupal\search_api\Plugin\PluginFormTrait;
 use Drupal\search_api\Query\QueryInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -17,7 +20,9 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
  *   description = @Translation("Index items on Pinecone.")
  * )
  */
-class SearchApiPineconeBackend extends BackendPluginBase {
+class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormInterface {
+
+  use PluginFormTrait;
 
   /**
    * The Pinecone client.
@@ -25,6 +30,29 @@ class SearchApiPineconeBackend extends BackendPluginBase {
    * @var \Drupal\openai_embeddings\Http\PineconeClient
    */
   protected PineconeClient $client;
+
+  /**
+   * {@inheritdoc}
+   */
+  public function defaultConfiguration() {
+    return [
+      'namespace' => NULL,
+    ];
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function buildConfigurationForm(array $form, FormStateInterface $form_state) {
+    $form['namespace'] = [
+      '#type' => 'textfield',
+      '#title' => $this->t('Namespace'),
+      '#description' => $this->t('An optional override for the default namespace. The index ID will always be appended.'),
+      '#default_value' => $this->configuration['namespace'],
+      '#pattern' => '[a-zA-Z0-9_]*',
+    ];
+    return $form;
+  }
 
   /**
    * {@inheritdoc}
@@ -128,8 +156,7 @@ class SearchApiPineconeBackend extends BackendPluginBase {
    *   The pinecone namespace.
    */
   public function getNamespace(IndexInterface $index): string {
-    // @todo Make configurable.
-    return "searchapi:{$this->server->id()}:{$index->id()}";
+    return ($this->configuration['namespace'] ?? "searchapi:{$this->server->id()}") . ":{$index->id()}";
   }
 
   /**
