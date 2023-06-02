@@ -89,7 +89,7 @@ class SearchForm extends FormBase {
       '#type' => 'html_tag',
       '#tag' => 'div',
     ];
-    $showSystem = (bool) $form_state->getValue('system_message');
+    $showSystem = !empty($form_state->getValue('system_messages'));
     foreach ($messages as $message) {
       if (!$showSystem && $message['role'] === 'system') {
         continue;
