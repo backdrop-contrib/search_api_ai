@@ -7,6 +7,7 @@ use Drupal\Core\Plugin\PluginFormInterface;
 use Drupal\openai_embeddings\Http\PineconeClient;
 use Drupal\search_api\Backend\BackendPluginBase;
 use Drupal\search_api\IndexInterface;
+use Drupal\search_api\Item\ItemInterface;
 use Drupal\search_api\Plugin\PluginFormTrait;
 use Drupal\search_api\Query\QueryInterface;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -102,7 +103,7 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
           }
         }
         else {
-          $itemBase['metadata'][$field->getFieldIdentifier()] = $field->getValues();
+          $itemBase['metadata'][$field->getFieldIdentifier()] = is_array($field->getValues()) ? implode(',', $field->getValues()) : $field->getValues();
         }
       }
 
@@ -143,7 +144,34 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
    * {@inheritdoc}
    */
   public function search(QueryInterface $query) {
-    // @todo Implement search() method.
+    $index = $query->getIndex();
+
+
+    $response = $this->client->query(
+      $query->getOption('query_embedding') ?? [0,2],
+      $query->getOption('top_k') ?? 8,
+      $query->getOption('include_metadata') ?? TRUE,
+      $query->getOption('include_values') ?? FALSE,
+      $query->getOption('filters') ?? [],
+      $query->getOption('namespace') ?? ''
+    );
+    $results = $query->getResults();
+
+    $decoded_response = json_decode($response->getBody()->getContents(), flags: \JSON_THROW_ON_ERROR);
+    foreach ($decoded_response->matches as $match) {
+      $item = $this->getFieldsHelper()->createItem($index, $match->id);
+      $item->setScore($match->score);
+      $this->extractMetadata($match, $item);
+      $results->addResultItem($item);
+    }
+    $results->setResultCount(count($decoded_response->matches));
+  }
+
+  /**
+   * Extract query metadata values to a result item.
+   */
+  public function extractMetadata(object $result_row, ItemInterface $item): void {
+    $item->setExtraData('metadata', $result_row->metadata);
   }
 
   /**
