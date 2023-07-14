@@ -146,6 +146,9 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
   public function search(QueryInterface $query) {
     $index = $query->getIndex();
 
+    if ($query->hasTag('server_index_status')) {
+      return NULL;
+    }
     $response = $this->client->query(
       $query->getOption('query_embedding'),
       $query->getOption('top_k'),
