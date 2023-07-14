@@ -3,6 +3,7 @@
 namespace Drupal\search_api_ai\Plugin\Block;
 
 use Drupal\Core\Block\BlockBase;
+use Drupal\Core\Entity\ContentEntityTypeInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBuilderInterface;
 use Drupal\Core\Form\FormState;
@@ -53,6 +54,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
     return [
       'index' => NULL,
       'view' => NULL,
+      'entity_types' => [],
       'top_k' => 8,
       'score_threshold' => 0.5,
       'max_length' => 1024,
@@ -97,6 +99,9 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
       '#title' => $this->t('View'),
       '#description' => $this->t('Optionally, select the View to restrict results to.'),
       '#default_value' => $this->configuration['view'],
+      '#empty_option' => $this->t('- None -'),
+      '#empty_value' => '',
+      '#sort_options' => TRUE,
     ];
 
     $views = $this->entityTypeManager
@@ -105,6 +110,26 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
     foreach ($views as $view) {
       $form['view']['#options'][$view->id()] = $view->label();
     }
+
+    $form['entity_types'] = [
+      '#type' => 'select',
+      '#title' => $this->t('Entity Types'),
+      '#description' => $this->t('Optionally, select entity types. When showing
+        the block, the vector query will be filtered to an entity of any of
+        those types if they can be found in the route parameters.'),
+      '#default_value' => $this->configuration['entity_types'],
+      '#multiple' => TRUE,
+      '#options' => [],
+      '#sort_options' => TRUE,
+    ];
+
+    $entity_types = $this->entityTypeManager->getDefinitions();
+    foreach ($entity_types as $entity_type_id => $entity_type) {
+      if ($entity_type instanceof ContentEntityTypeInterface) {
+        $form['entity_types']['#options'][$entity_type_id] = $entity_type->getLabel();
+      }
+    }
+    $form['entity_types']['#size'] = min(10, count($form['entity_types']['#options']));
 
     $form['no_results_message'] = [
       '#type' => 'textfield',
@@ -241,6 +266,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
   public function blockSubmit($form, FormStateInterface $form_state) {
     $this->configuration['index'] = $form_state->getValue('index');
     $this->configuration['view'] = $form_state->getValue('view');
+    $this->configuration['entity_types'] = $form_state->getValue('entity_types');
     $this->configuration['no_results_message'] = $form_state->getValue('no_results_message');
     $this->configuration['error_message'] = $form_state->getValue('error_message');
 

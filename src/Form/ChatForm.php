@@ -106,19 +106,24 @@ class ChatForm extends FormBase {
     $backend = $index->getServerInstance()->getBackend();
     $namespace = $backend->getNamespace($index);
 
-    $view_filter = [];
+    $vector_filter_ids = [];
+    // If a View is configured, execute it and add the IDs to the filter.
     if (!empty($chat_config['view'])) {
       $view = $this->entityTypeManager->getStorage('view')->load($chat_config['view']);
       $view->getExecutable()->execute();
 
       foreach ($view->getExecutable()->result as $resultRow) {
-        $view_filter[] = "entity:{$resultRow->_entity->getEntityTypeId()}/{$resultRow->_entity->id()}:{$resultRow->_entity->language()->getId()}";
+        $vector_filter_ids[] = "entity:{$resultRow->_entity->getEntityTypeId()}/{$resultRow->_entity->id()}:{$resultRow->_entity->language()->getId()}";
       }
     }
 
-    // @ToDo: Un-hardcode `commerce_product`.
-    if ($product = \Drupal::routeMatch()->getParameter('commerce_product')) {
-      $view_filter[] = "entity:{$product->getEntityTypeId()}/{$product->id()}:{$product->language()->getId()}";
+    // If entity types are configured, check if any of them are present in the route.
+    if (!empty($chat_config['entity_types'])) {
+      foreach ($chat_config['entity_types'] as $entity_type) {
+        if ($entity = \Drupal::routeMatch()->getParameter($entity_type)) {
+          $vector_filter_ids[] = "entity:{$entity->getEntityTypeId()}/{$entity->id()}:{$entity->language()->getId()}";
+        }
+      }
     }
 
     $messages = [
@@ -149,8 +154,8 @@ class ChatForm extends FormBase {
     }
 
     $filters = [];
-    if ($view_filter) {
-      $filters['item_id'] = ['$in' => $view_filter];
+    if ($vector_filter_ids) {
+      $filters['item_id'] = ['$in' => $vector_filter_ids];
     }
     // Find the best matches from the vector store.
     try {
