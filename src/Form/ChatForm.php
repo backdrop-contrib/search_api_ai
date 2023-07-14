@@ -175,7 +175,7 @@ class ChatForm extends FormBase {
       $results = $query->execute();
     }
     catch (\Exception $exception) {
-      watchdog_exception('serach_api_ai', $exception);
+      watchdog_exception('search_api_ai', $exception);
       $form_state->set('response', $chat_config['error_message']);
       return;
     }
