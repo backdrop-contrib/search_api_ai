@@ -106,6 +106,21 @@ class ChatForm extends FormBase {
     $backend = $index->getServerInstance()->getBackend();
     $namespace = $backend->getNamespace($index);
 
+    $view_filter = [];
+    if (!empty($chat_config['view'])) {
+      $view = $this->entityTypeManager->getStorage('view')->load($chat_config['view']);
+      $view->getExecutable()->execute();
+
+      foreach ($view->getExecutable()->result as $resultRow) {
+        $view_filter[] = "entity:{$resultRow->_entity->getEntityTypeId()}/{$resultRow->_entity->id()}:{$resultRow->_entity->language()->getId()}";
+      }
+    }
+
+    // @ToDo: Un-hardcode `commerce_product`.
+    if ($product = \Drupal::routeMatch()->getParameter('commerce_product')) {
+      $view_filter[] = "entity:{$product->getEntityTypeId()}/{$product->id()}:{$product->language()->getId()}";
+    }
+
     $messages = [
       [
         'role' => 'system',
@@ -133,6 +148,10 @@ class ChatForm extends FormBase {
       return;
     }
 
+    $filters = [];
+    if ($view_filter) {
+      $filters['item_id'] = ['$in' => $view_filter];
+    }
     // Find the best matches from the vector store.
     try {
       /** @var \Drupal\search_api\IndexInterface $index */
@@ -145,7 +164,7 @@ class ChatForm extends FormBase {
         'top_k' => $chat_config['top_k'],
         'include_metadata' => TRUE,
         'include_values' => FALSE,
-        'filters' => [],
+        'filters' => $filters,
         'namespace' => $namespace,
       ]);
       $results = $query->execute();
@@ -185,8 +204,8 @@ class ChatForm extends FormBase {
       $result = $this->aiClient->chat()->create([
         'model' => $chat_config['chat_model'],
         'messages' => $messages,
-        'temperature' => $chat_config['temperature'],
-        'max_tokens' => $chat_config['max_tokens'],
+        'temperature' => (float) $chat_config['temperature'],
+        'max_tokens' => (int) $chat_config['max_tokens'],
       ])->toArray();
       $form_state->set('response', trim($result["choices"][0]["message"]['content']) ?? $chat_config['no_response_message']);
     }

@@ -146,14 +146,13 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
   public function search(QueryInterface $query) {
     $index = $query->getIndex();
 
-
     $response = $this->client->query(
-      $query->getOption('query_embedding') ?? [0,2],
-      $query->getOption('top_k') ?? 8,
-      $query->getOption('include_metadata') ?? TRUE,
-      $query->getOption('include_values') ?? FALSE,
-      $query->getOption('filters') ?? [],
-      $query->getOption('namespace') ?? ''
+      $query->getOption('query_embedding'),
+      $query->getOption('top_k'),
+      $query->getOption('include_metadata'),
+      $query->getOption('include_values'),
+      $query->getOption('filters'),
+      $query->getOption('namespace')
     );
     $results = $query->getResults();
 

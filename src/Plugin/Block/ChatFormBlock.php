@@ -52,6 +52,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
   public function defaultConfiguration() {
     return [
       'index' => NULL,
+      'view' => NULL,
       'top_k' => 8,
       'score_threshold' => 0.5,
       'max_length' => 1024,
@@ -89,6 +90,20 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
         }
       }
 
+    }
+
+    $form['view'] = [
+      '#type' => 'select',
+      '#title' => $this->t('View'),
+      '#description' => $this->t('Optionally, select the View to restrict results to.'),
+      '#default_value' => $this->configuration['view'],
+    ];
+
+    $views = $this->entityTypeManager
+      ->getStorage('view')
+      ->loadMultiple();
+    foreach ($views as $view) {
+      $form['view']['#options'][$view->id()] = $view->label();
     }
 
     $form['no_results_message'] = [
@@ -225,6 +240,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
    */
   public function blockSubmit($form, FormStateInterface $form_state) {
     $this->configuration['index'] = $form_state->getValue('index');
+    $this->configuration['view'] = $form_state->getValue('view');
     $this->configuration['no_results_message'] = $form_state->getValue('no_results_message');
     $this->configuration['error_message'] = $form_state->getValue('error_message');
 
