@@ -175,7 +175,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
       '#group' => 'advanced',
       '#description' => $this->t('The threshold vector embeddings must meet to be considered relevant. Must be between 0 and 1.
          A threshold of 0 would mean everything should be considered relevant and a threshold of 1 would mean they have to be
-          the same to be considered relevant.'),
+         the same to be considered relevant.'),
       '#default_value' => $this->configuration['score_threshold'],
       '#step' => 0.01,
       '#min' => 0,
@@ -319,11 +319,19 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
       ];
       foreach ($this->configuration as $setting => $value) {
         if (!in_array($setting, $keys_to_ignore)) {
+          $value = is_array($value) ? implode(', ', $value) : $value;
           $block['debug']['settings']['#value'] .= "\n" . $setting . ": " . $value;
         }
       }
     }
     return $block;
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public function getCacheMaxAge() {
+    return 0;
   }
 
 }

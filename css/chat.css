@@ -1,0 +1,76 @@
+/* Chat block CSS */
+.block-search-api-ai-chat-form {
+  position: fixed;
+  background-color: white;
+  box-shadow: 4px 4px 10px rgba(150,150,150,0.5);
+  margin-bottom: 0 !important;
+  bottom: 0;
+  right: 0;
+  z-index: 50;
+  width: 100%;
+  resize: both;
+  overflow: scroll;
+}
+
+@media (min-width: 720px) {
+  .block-search-api-ai-chat-form {
+    border-radius: 12px;
+    width: 40%;
+    bottom: 1rem;
+    right: 1rem;
+  }
+}
+
+/* Block heading */
+.block-search-api-ai-chat-form h2 {
+  background-color: var(--color--primary-40);
+  color: white;
+  padding: 1rem;
+}
+
+@media (min-width: 720px) {
+  .block-search-api-ai-chat-form h2 {
+    border-radius: 12px 12px 0 0;
+  }
+}
+
+/* Form layout */
+.block-search-api-ai-chat-form form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+}
+
+/* Query field */
+.block-search-api-ai-chat-form .chat-form-query {
+  margin: 0 1rem;
+  min-height: auto;
+  resize: none;
+  width: calc(100% - 1rem);
+}
+
+/* Response field */
+.block-search-api-ai-chat-form .chat-form-response {
+  grid-column-start: span 2;
+  max-height: 200px;
+  overflow: scroll;
+  padding: 0.5rem 1rem;
+}
+
+/* Force scrollbar to always show in response field */
+.block-search-api-ai-chat-form .chat-form-response::-webkit-scrollbar {
+  -webkit-appearance: none;
+  width: 7px;
+}
+.block-search-api-ai-chat-form .chat-form-response::-webkit-scrollbar-thumb {
+  border-radius: 4px;
+  background-color: rgba(0,0,0,.5);
+  box-shadow: 0 0 1px rgba(255,255,255,.5);
+}
+
+/* Submit button. */
+.block-search-api-ai-chat-form .chat-form-send {
+  border: 1px 1px 1px 0 solid var(--color--gray-60);
+  padding-top: 0;
+  height: 75%;
+}
+

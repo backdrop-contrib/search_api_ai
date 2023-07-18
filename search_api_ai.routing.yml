@@ -1,0 +1,7 @@
+search_api_ai.test:
+  path: '/api-ai-test'
+  defaults:
+    _title: 'Test'
+    _form: '\Drupal\search_api_ai\Form\ChatForm'
+  requirements:
+    _access: 'TRUE'

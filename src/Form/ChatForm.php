@@ -8,8 +8,11 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\openai\Utility\StringHelper;
+use Drupal\search_api\IndexInterface;
+use Drupal\search_api\Query\ResultSetInterface;
 use OpenAI\Client;
 use Symfony\Component\DependencyInjection\ContainerInterface;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Provides a Search API AI form.
@@ -52,42 +55,46 @@ class ChatForm extends FormBase {
    * {@inheritdoc}
    */
   public function buildForm(array $form, FormStateInterface $form_state) {
+    $form['#attached']['library'][] = 'search_api_ai/chat';
+
+    $response_id = Html::getId($form_state->getBuildInfo()['block_id'] . '-response');
+    $form['response'] = [
+      '#type' => 'html_tag',
+      '#tag' => 'div',
+      '#attributes' => [
+        'id' => $response_id,
+        'class' => ['chat-form-response'],
+      ],
+      '#value' => nl2br($form_state->get('response') ?? ''),
+    ];
 
     $form['query'] = [
       '#type' => 'textarea',
-      '#title' => $this->t('Send a message'),
+      '#title' => $this->t('Ask me a question'),
       '#title_display' => 'invisible',
       '#attributes' => [
-        'placeholder' => $this->t('Send a message'),
+        'placeholder' => $this->t('Ask me a question'),
+        'class' => ['chat-form-query'],
       ],
       '#required' => TRUE,
+      '#rows' => 1,
     ];
 
     $form['actions'] = [
       '#type' => 'actions',
     ];
+
     $form['actions']['submit'] = [
       '#type' => 'submit',
       '#value' => $this->t('Send'),
-      '#ajax' => [
-        'callback' => '::getResponse',
-        'progress' => [
-          'type' => 'throbber',
-        ],
+      '#attributes' => [
+        'data-search-api-ai-ajax' => $response_id,
+        'class' => ['chat-form-send'],
+      ],
+      '#attached' => [
+        'library' => ['search_api_ai/form-stream'],
       ],
     ];
-
-    $form['response'] = [
-      '#type' => 'html_tag',
-      '#tag' => 'div',
-      '#weight' => 100,
-      '#id' => Html::getId($form_state->getBuildInfo()['block_id'] . '-response'),
-      '#value' => nl2br($form_state->get('response')),
-    ];
-
-    $form['actions']['submit']['#ajax']['wrapper'] = $form['response']['#id'];
-
-    $form['#attached']['library'][] = 'core/drupal.form';
 
     return $form;
   }
@@ -96,13 +103,103 @@ class ChatForm extends FormBase {
    * {@inheritdoc}
    */
   public function submitForm(array &$form, FormStateInterface $form_state) {
-    $form_state->setRebuild();
     $chat_config = $this->getChatConfig($form_state);
 
     /** @var \Drupal\search_api\IndexInterface $index */
     $index = $this->entityTypeManager
       ->getStorage('search_api_index')
       ->load($chat_config['index']);
+
+    $user_query = StringHelper::prepareText($form_state->getValue('query'), [], $chat_config['max_length']);
+    $query_vectors = $this->getQueryVectors($index, $user_query, $chat_config, $form_state);
+
+    // If there are no results, set empty response message and return.
+    if ($query_vectors->getResultCount() === 0) {
+      $form_state->set('response', $chat_config['no_results_message']);
+      return;
+    }
+
+    // Set up the messages to send to the AI system with a base system message.
+    $messages = [
+      [
+        'role' => 'system',
+        'content' => $chat_config['chat_system_role'],
+      ],
+    ];
+
+    // Create a system chat message for each result that meets the threshold.
+    foreach ($query_vectors as $match) {
+      if ($match->getScore() < $chat_config['score_threshold']) {
+        continue;
+      }
+
+      $entity = $index->loadItem($match->getExtraData('metadata')->item_id)->getValue();
+      $content = StringHelper::prepareText(trim($match->getExtraData('metadata')->content), [], 1024);
+      $messages[] = [
+        'role' => 'system',
+        'content' => "Source link: {$entity->toLink()->toString()}\nSnippet: {$content}",
+      ];
+    }
+
+    // Send the query to OpenAI.
+    $messages[] = [
+      'role' => 'user',
+      'content' => $user_query,
+    ];
+
+    if ($this->getRequest()->isXmlHttpRequest()) {
+      try {
+        $http_response = new StreamedResponse();
+        $http_response->setCallback(function () use ($chat_config, $messages) {
+          $stream = $this->aiClient->chat()->createStreamed([
+            'model' => $chat_config['chat_model'],
+            'messages' => $messages,
+            'temperature' => (float) $chat_config['temperature'],
+            'max_tokens' => (int) $chat_config['max_tokens'],
+          ]);
+          foreach ($stream as $response) {
+            echo $response->choices[0]->delta->content;
+            ob_flush();
+            flush();
+          }
+        });
+
+        $form_state->setResponse($http_response);
+      } catch (\Exception $exception) {
+        $this->messenger()
+          ->addError("OpenAI exception: {$exception->getMessage()}");
+        return;
+      }
+    }
+    else {
+      $chat_response = $this->aiClient->chat()->create([
+        'model' => $chat_config['chat_model'],
+        'messages' => $messages,
+        'temperature' => (float) $chat_config['temperature'],
+        'max_tokens' => (int) $chat_config['max_tokens'],
+      ]);
+      $form_state->setRebuild();
+      $form_state->set('response', $chat_response->choices[0]->message->content);
+    }
+  }
+
+  /**
+   * Get the query vectors from a search Index.
+   *
+   * @param \Drupal\search_api\IndexInterface $index
+   *   The index to get the vectors from.
+   * @param string $user_query
+   *   The user query.
+   * @param array $chat_config
+   *   The chat configuration options.
+   * @param \Drupal\Core\Form\FormStateInterface $form_state
+   *   The current form state.
+   *
+   * @return \Drupal\search_api\Query\ResultSetInterface|NULL
+   *   The result of the query or NULL if an error occurs.
+   *   Errors will be added to the form state with a 'response' key.
+   */
+  protected function getQueryVectors(IndexInterface $index, string $user_query, array $chat_config, FormStateInterface $form_state): ResultSetInterface|NULL {
     $backend = $index->getServerInstance()->getBackend();
     $namespace = $backend->getNamespace($index);
 
@@ -126,14 +223,6 @@ class ChatForm extends FormBase {
       }
     }
 
-    $messages = [
-      [
-        'role' => 'system',
-        'content' => $chat_config['chat_system_role'],
-      ],
-    ];
-    $user_query = StringHelper::prepareText($form_state->getValue('query'), [], $chat_config['max_length']);
-
     // Create the embedding for the latest question.
     try {
       $response = $this->aiClient->embeddings()->create([
@@ -144,19 +233,20 @@ class ChatForm extends FormBase {
       if (!$query_embedding) {
         $this->logger('search_api_ai')->error('Error retrieving prompt embedding.');
         $form_state->set('response', $chat_config['error_message']);
-        return;
+        return NULL;
       }
     }
     catch (\Exception $exception) {
       watchdog_exception('search_api_ai', $exception);
       $form_state->set('response', $chat_config['error_message']);
-      return;
+      return NULL;
     }
 
     $filters = [];
     if ($vector_filter_ids) {
       $filters['item_id'] = ['$in' => $vector_filter_ids];
     }
+
     // Find the best matches from the vector store.
     try {
       /** @var \Drupal\search_api\IndexInterface $index */
@@ -177,54 +267,10 @@ class ChatForm extends FormBase {
     catch (\Exception $exception) {
       watchdog_exception('search_api_ai', $exception);
       $form_state->set('response', $chat_config['error_message']);
-      return;
+      return NULL;
     }
 
-    // Set empty response message and return.
-    if ($results->getResultCount() === 0) {
-      $form_state->set('response', $chat_config['no_results_message']);
-      return;
-    }
-
-    // Create a system chat message for each result that meets the threshold.
-    foreach ($results as $match) {
-      if ($match->getScore() < $chat_config['score_threshold']) {
-        continue;
-      }
-
-      $entity = $index->loadItem($match->getExtraData('metadata')->item_id)->getValue();
-      $content = StringHelper::prepareText(trim($match->getExtraData('metadata')->content), [], 1024);
-      $messages[] = [
-        'role' => 'system',
-        'content' => "Source link: {$entity->toLink()->toString()}\nSnippet: {$content}",
-      ];
-    }
-
-    // Send the query to OpenAI.
-    $messages[] = [
-      'role' => 'user',
-      'content' => $user_query,
-    ];
-    try {
-      $result = $this->aiClient->chat()->create([
-        'model' => $chat_config['chat_model'],
-        'messages' => $messages,
-        'temperature' => (float) $chat_config['temperature'],
-        'max_tokens' => (int) $chat_config['max_tokens'],
-      ])->toArray();
-      $form_state->set('response', trim($result["choices"][0]["message"]['content']) ?? $chat_config['no_response_message']);
-    }
-    catch (\Exception $exception) {
-      $this->messenger()->addError("OpenAI exception: {$exception->getMessage()}");
-      return;
-    }
-  }
-
-  /**
-   * AJAX callback to populate the response.
-   */
-  public function getResponse(array &$form, FormStateInterface $form_state) {
-    return $form['response'];
+    return $results;
   }
 
   /**
