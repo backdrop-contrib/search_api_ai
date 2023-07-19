@@ -1,5 +1,6 @@
 /* Chat block CSS */
-.block-search-api-ai-chat-form {
+.block-search-api-ai-chat-form,
+.block-search-api-ai-chat-form.contextual-region {
   position: fixed;
   background-color: white;
   box-shadow: 4px 4px 10px rgba(150,150,150,0.5);
@@ -13,7 +14,8 @@
 }
 
 @media (min-width: 720px) {
-  .block-search-api-ai-chat-form {
+  .block-search-api-ai-chat-form,
+  .block-search-api-ai-chat-form.contextual-region {
     border-radius: 12px;
     width: 40%;
     bottom: 1rem;
