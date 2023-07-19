@@ -93,7 +93,7 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
           foreach ($field->getValues() as $delta1 => $values) {
             foreach ($values as $delta2 => $value) {
               $chunkedItems[] = [
-                'id' => $item->getId() . ':' . $delta1 . ':' . $delta2,
+                'id' => $item->getId() . ':' . $field->getFieldIdentifier() . ':' . $delta1 . ':' . $delta2,
                 'values' => $value['vectors'],
                 'metadata' => [
                   'content' => $value['content'],
