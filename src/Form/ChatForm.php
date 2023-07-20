@@ -204,15 +204,6 @@ class ChatForm extends FormBase {
     $namespace = $backend->getNamespace($index);
 
     $vector_filter_ids = [];
-    // If a View is configured, execute it and add the IDs to the filter.
-    if (!empty($chat_config['view'])) {
-      $view = $this->entityTypeManager->getStorage('view')->load($chat_config['view']);
-      $view->getExecutable()->execute();
-
-      foreach ($view->getExecutable()->result as $resultRow) {
-        $vector_filter_ids[] = "entity:{$resultRow->_entity->getEntityTypeId()}/{$resultRow->_entity->id()}:{$resultRow->_entity->language()->getId()}";
-      }
-    }
 
     // If entity types are configured, check if any of them are present in the route.
     if (!empty($chat_config['entity_types'])) {
@@ -220,6 +211,17 @@ class ChatForm extends FormBase {
         if ($entity = \Drupal::routeMatch()->getParameter($entity_type)) {
           $vector_filter_ids[] = "entity:{$entity->getEntityTypeId()}/{$entity->id()}:{$entity->language()->getId()}";
         }
+      }
+    }
+
+    // If a View is configured, execute it and add the IDs to the filter.
+    // Only check views config if we have no route matched ids.
+    if (empty($vector_filter_ids) && !empty($chat_config['view'])) {
+      $view = $this->entityTypeManager->getStorage('view')->load($chat_config['view']);
+      $view->getExecutable()->execute();
+
+      foreach ($view->getExecutable()->result as $resultRow) {
+        $vector_filter_ids[] = "entity:{$resultRow->_entity->getEntityTypeId()}/{$resultRow->_entity->id()}:{$resultRow->_entity->language()->getId()}";
       }
     }
 
