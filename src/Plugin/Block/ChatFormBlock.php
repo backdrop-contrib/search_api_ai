@@ -69,8 +69,8 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
       'chat_system_role' => "You are a chat bot to help find resources and provide links and references from the User's private knowledgebase. You will base all your answers off the provided context that you find from the user's knowledgebase. Always return links as HTML.",
       'assistant_message' => <<<EOF
 I found the following information in the User's Knowledge Base:
-```[context]
-```
+[context]
+
 I will respond with information from the User's Knowledge Base above.
 EOF,
       'user_message' => <<<EOF
