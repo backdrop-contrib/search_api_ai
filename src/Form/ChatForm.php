@@ -128,25 +128,34 @@ class ChatForm extends FormBase {
     ];
 
     // Create a system chat message for each result that meets the threshold.
+    $context = '';
     foreach ($query_vectors as $match) {
       if ($match->getScore() < $chat_config['score_threshold']) {
         continue;
       }
 
-      $entity = $index->loadItem($match->getExtraData('metadata')->item_id)->getValue();
-      $content = StringHelper::prepareText(trim($match->getExtraData('metadata')->content), [], 1024);
+      // If the entity can be loaded, prepare a trimmed version as context.
+      if ($entity = $index->loadItem($match->getExtraData('metadata')->item_id)->getValue()) {
+        $content = StringHelper::prepareText(trim($match->getExtraData('metadata')->content), [], 1024);
+        $context .= "Source link: {$entity->toLink()->toString()}\nSnippet: {$content}\n\n";
+      }
+    }
+
+    // If we have any context, add a message containing it.
+    if ($context) {
       $messages[] = [
-        'role' => 'system',
-        'content' => "Source link: {$entity->toLink()->toString()}\nSnippet: {$content}",
+        'role' => 'assistant',
+        'content' => str_replace('[context]', $context, $chat_config['assistant_message']),
       ];
     }
 
-    // Send the query to OpenAI.
+    // Add a message with the user query, wrapped in the template.
     $messages[] = [
       'role' => 'user',
-      'content' => $user_query,
+      'content' => str_replace('[user-prompt]', $user_query, $chat_config['user_message']),
     ];
 
+    // Send the query to OpenAI.
     if ($this->getRequest()->isXmlHttpRequest()) {
       try {
         $http_response = new StreamedResponse();
@@ -287,18 +296,32 @@ class ChatForm extends FormBase {
   protected function getChatConfig(FormStateInterface $form_state) {
     $config = $form_state->getBuildInfo()['chat_config'] ?? [];
     return $config + [
-      'top_k' => 8,
-      'score_threshold' => 0.5,
-      'max_length' => 1024,
-      'model' => 'text-embedding-ada-002',
-      'no_results_message' => "Sorry, I couldn't find what you are looking for.",
-      'error_message' => 'Sorry, something went wrong. Please try again later.',
-      'no_response_message' => 'No answer was provided.',
-      'debug' => FALSE,
-      'chat_model' => 'gpt-4',
-      'temperature' => 0.4,
-      'max_tokens' => 1024,
-      'chat_system_role' => 'You are a chat bot to help find resources and provide links and references.',
+        'index' => NULL,
+        'view' => NULL,
+        'entity_types' => [],
+        'top_k' => 8,
+        'score_threshold' => 0.5,
+        'max_length' => 1024,
+        'model' => 'text-embedding-ada-002',
+        'no_results_message' => "Sorry, I couldn't find what you are looking for.",
+        'error_message' => 'Sorry, something went wrong. Please try again later.',
+        'no_response_message' => 'No answer was provided.',
+        'debug' => FALSE,
+        'chat_model' => 'gpt-4',
+        'temperature' => 0.4,
+        'max_tokens' => 1024,
+        'chat_system_role' => "You are a chat bot to help find resources and provide links and references from the User's private knowledgebase. You will base all your answers off the provided context that you find from the user's knowledgebase. Always return links as HTML.",
+        'assistant_message' => <<<EOF
+I found the following information in the User's Knowledge Base:
+```[context]
+```
+I will respond with information from the User's Knowledge Base above.
+EOF,
+        'user_message' => <<<EOF
+[user-prompt]
+
+Provide your answer only from the provided context. Do not remind me what I asked you for. Do not apologize. Do not self-reference.
+EOF,
     ];
   }
 
