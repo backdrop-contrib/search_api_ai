@@ -4,6 +4,7 @@ namespace Drupal\search_api_ai\Plugin\search_api\data_type;
 
 use Drupal\openai\Utility\StringHelper;
 use Drupal\search_api\DataType\DataTypePluginBase;
+use Drupal\search_api_ai\TextChunker;
 use OpenAI\Client;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
@@ -41,16 +42,11 @@ class Embeddings extends DataTypePluginBase {
    */
   public function getValue($value) {
     // @todo Make configurable.
-    $chunkSize = 2048;
+    $chunkMaxSize = 1536;
+    $chunkMinOverlap = 64;
     $model = 'text-embedding-ada-002';
 
-    // Split up the content.
-    // @todo More intelligent chunking, probably with configuration etc, so
-    //   perhaps as a processor.
-    $chunks = mb_str_split(
-      $value,
-      $chunkSize,
-    );
+    $chunks = TextChunker::chunkText($value, $chunkMaxSize, $chunkMinOverlap);
 
     $items = [];
     foreach ($chunks as $delta => $chunk) {
@@ -59,7 +55,7 @@ class Embeddings extends DataTypePluginBase {
         continue;
       }
 
-      $text = StringHelper::prepareText($chunk, [], $chunkSize);
+      $text = StringHelper::prepareText($chunk, [], $chunkMaxSize);
 
       $response = $this->client->embeddings()->create([
         'model' => $model,
