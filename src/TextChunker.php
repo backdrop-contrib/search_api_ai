@@ -38,7 +38,9 @@ class TextChunker {
       $chunk = mb_substr(
         $remainingText,
         0,
-        self::getLastWhitespacePosition($remainingText, $offset),
+        // Length will be the position of the last whitespace within the max
+        // chunk size, or otherwise the max chunk size itself.
+        self::getLastWhitespacePosition($remainingText, $offset) ?? $maxSize,
       );
       $chunks[] = trim($chunk);
 
@@ -46,7 +48,9 @@ class TextChunker {
       // whitespace.
       $remainingText = mb_substr(
         $remainingText,
-        self::getLastWhitespacePosition($chunk, -$minOverlap),
+        // Length will be the last white space before the minimum overlap, or
+        // otherwise the minimum overlap itself.
+        self::getLastWhitespacePosition($chunk, -$minOverlap) ?? -$minOverlap,
       );
     }
 
@@ -62,16 +66,18 @@ class TextChunker {
    * @param int $offset
    *   The offset to search from.
    *
-   * @return int
-   *   The multibyte safe position of the last whitespace character.
+   * @return int|null
+   *   The multibyte safe position of the last whitespace character or NULL if
+   *   there is no whitespace.
    */
-  public static function getLastWhitespacePosition(mixed $haystack, int $offset): int {
-    return max(
+  public static function getLastWhitespacePosition(mixed $haystack, int $offset): ?int {
+    $whitespacePosition = max(
       mb_strrpos($haystack, " ", $offset),
       mb_strrpos($haystack, "\n", $offset),
       mb_strrpos($haystack, "\r", $offset),
       mb_strrpos($haystack, "\t", $offset),
     );
+    return $whitespacePosition ?: NULL;
   }
 
 }
