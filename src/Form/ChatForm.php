@@ -114,7 +114,7 @@ class ChatForm extends FormBase {
     $query_vectors = $this->getQueryVectors($index, $user_query, $chat_config, $form_state);
 
     // If there are no results, set empty response message and return.
-    if ($query_vectors->getResultCount() === 0) {
+    if (empty($query_vectors) || $query_vectors->getResultCount() === 0) {
       $form_state->set('response', $chat_config['no_results_message']);
       return;
     }

@@ -5,6 +5,7 @@ namespace Drupal\search_api_pinecone\Plugin\search_api\backend;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Plugin\PluginFormInterface;
 use Drupal\openai_embeddings\Http\PineconeClient;
+use Drupal\openai_embeddings\VectorClientInterface;
 use Drupal\search_api\Backend\BackendPluginBase;
 use Drupal\search_api\IndexInterface;
 use Drupal\search_api\Item\ItemInterface;
@@ -28,9 +29,9 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
   /**
    * The Pinecone client.
    *
-   * @var \Drupal\openai_embeddings\Http\PineconeClient
+   * @var \Drupal\openai_embeddings\VectorClientInterface
    */
-  protected PineconeClient $client;
+  protected VectorClientInterface $client;
 
   /**
    * {@inheritdoc}
@@ -60,7 +61,8 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
    */
   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
     $plugin = parent::create($container, $configuration, $plugin_id, $plugin_definition);
-    $plugin->client = $container->get('openai_embeddings.pinecone_client');
+    $plugin_id = $container->get('config.factory')->get('openai_embeddings.settings')->get('vector_client_plugin');
+    $plugin->client = $container->get('plugin.manager.vector_client')->createInstance($plugin_id);
     return $plugin;
   }
 
@@ -110,7 +112,7 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
       foreach ($chunkedItems as $chunkedItem) {
         $chunkedItem += $itemBase;
         $chunkedItem['metadata'] += $itemBase['metadata'];
-        $this->client->upsert($chunkedItem, $namespace);
+        $this->client->upsert(['vectors' => $chunkedItem, 'collection' => $namespace]);
       }
       $successfulItemIds[] = $item->getId();
     }
@@ -122,22 +124,22 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
    * {@inheritdoc}
    */
   public function deleteItems(IndexInterface $index, array $item_ids) {
-    $this->client->delete(
-      namespace: $this->getNamespace($index),
-      filter: [
+    $this->client->delete([
+      'collection' => $this->getNamespace($index),
+      'filter' => [
         'item_id' => ['$in' => $item_ids],
       ],
-    );
+    ]);
   }
 
   /**
    * {@inheritdoc}
    */
   public function deleteAllIndexItems(IndexInterface $index, $datasource_id = NULL) {
-    $this->client->delete(
-      deleteAll: TRUE,
-      namespace: $this->getNamespace($index),
-    );
+    $this->client->delete([
+      'deleteAll' => TRUE,
+      'collection' => $this->getNamespace($index),
+    ]);
   }
 
   /**
@@ -149,13 +151,14 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
     if ($query->hasTag('server_index_status')) {
       return NULL;
     }
-    $response = $this->client->query(
-      $query->getOption('query_embedding'),
-      $query->getOption('top_k'),
-      $query->getOption('include_metadata'),
-      $query->getOption('include_values'),
-      $query->getOption('filters'),
-      $query->getOption('namespace')
+    $response = $this->client->query([
+        'vector' => $query->getOption('query_embedding'),
+        'top_k' => $query->getOption('top_k'),
+        'include_metadata' => $query->getOption('include_metadata'),
+        'include_values' => TRUE,//$query->getOption('include_values'),
+        'filter' => $query->getOption('filters'),
+        'collection' => $query->getOption('namespace'),
+      ]
     );
     $results = $query->getResults();
 

@@ -8,6 +8,8 @@ use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\openai\Utility\StringHelper;
 use Drupal\openai_embeddings\Http\PineconeClient;
+use Drupal\openai_embeddings\VectorClientInterface;
+use Drupal\openai_embeddings\VectorClientPluginManager;
 use Drupal\search_api_pinecone\Plugin\search_api\backend\SearchApiPineconeBackend;
 use OpenAI\Client;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -32,20 +34,28 @@ class SearchForm extends FormBase {
   const CHAT_MAX_TOKENS = 1024;
 
   /**
+   * @var \Drupal\openai_embeddings\VectorClientInterface
+   */
+  protected VectorClientInterface $vectorClient;
+
+  /**
    * Construct the OpenAI Search form.
    *
    * @param \OpenAI\Client $aiClient
    *   The OpenAI client.
-   * @param \Drupal\openai_embeddings\Http\PineconeClient $pineconeClient
-   *   The Pinecone client.
+   * @param \Drupal\openai_embeddings\VectorClientPluginManager $clientPluginManager
+   *   The vector client plugin manager.
    * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entityTypeManager
    *   The entity type manager.
    */
   public function __construct(
     private readonly Client $aiClient,
-    private readonly PineconeClient $pineconeClient,
+    private readonly VectorClientPluginManager $clientPluginManager,
     private readonly EntityTypeManagerInterface $entityTypeManager,
-  ) {}
+  ) {
+    $plugin_id = $this->configFactory()->get('openai_embeddings.settings')->get('vector_client_plugin');
+    $this->vectorClient = $clientPluginManager->createInstance($plugin_id);
+  }
 
   /**
    * {@inheritdoc}
@@ -53,7 +63,7 @@ class SearchForm extends FormBase {
   public static function create(ContainerInterface $container) {
     return new static(
       $container->get('openai.client'),
-      $container->get('openai_embeddings.pinecone_client'),
+      $container->get('plugin.manager.vector_client'),
       $container->get('entity_type.manager'),
     );
   }
@@ -180,14 +190,13 @@ class SearchForm extends FormBase {
 
     // Find the best matches from pinecone.
     try {
-      $response = $this->pineconeClient->query(
-        $query_embedding,
-        self::PINECONE_TOPK,
-        TRUE,
-        FALSE,
-        [],
-        $namespace,
-      );
+      $response = $this->vectorClient->query([
+        'vector' => $query_embedding,
+        'top_k' => self::PINECONE_TOPK,
+        'include_metadata' => TRUE,
+        'include_values' => FALSE,
+        'namespace' => $namespace,
+      ]);
       $result = json_decode($response->getBody()->getContents(), flags: \JSON_THROW_ON_ERROR);
       if (empty($result->matches)) {
         $this->messenger()->addError("Zero pinecone results");
