@@ -4,7 +4,6 @@ namespace Drupal\search_api_pinecone\Plugin\search_api\backend;
 
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Plugin\PluginFormInterface;
-use Drupal\openai_embeddings\Http\PineconeClient;
 use Drupal\openai_embeddings\VectorClientInterface;
 use Drupal\search_api\Backend\BackendPluginBase;
 use Drupal\search_api\IndexInterface;
@@ -152,13 +151,14 @@ class SearchApiPineconeBackend extends BackendPluginBase implements PluginFormIn
       return NULL;
     }
     $response = $this->client->query([
-        'vector' => $query->getOption('query_embedding'),
-        'top_k' => $query->getOption('top_k'),
-        'include_metadata' => $query->getOption('include_metadata'),
-        'include_values' => TRUE,//$query->getOption('include_values'),
-        'filter' => $query->getOption('filters'),
-        'collection' => $query->getOption('namespace'),
-      ]
+      'vector' => $query->getOption('query_embedding'),
+      'top_k' => $query->getOption('top_k'),
+      'include_metadata' => $query->getOption('include_metadata'),
+    // $query->getOption('include_values'),
+      'include_values' => TRUE,
+      'filter' => $query->getOption('filters'),
+      'collection' => $query->getOption('namespace'),
+    ]
     );
     $results = $query->getResults();
 

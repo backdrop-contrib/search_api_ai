@@ -34,5 +34,4 @@ abstract class SearchApiAiBackendPluginBase extends BackendPluginBase {
     return $this->engineConfigurationForm($form, $form_state);
   }
 
-
 }

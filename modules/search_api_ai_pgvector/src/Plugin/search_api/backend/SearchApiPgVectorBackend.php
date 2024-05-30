@@ -195,7 +195,7 @@ class SearchApiPgVectorBackend extends Database implements PluginFormInterface, 
               'drupal_long_id' => $item->getId() . ':' . $field->getFieldIdentifier() . ':' . $delta1 . ':' . $delta2,
               'drupal_entity_id' => $item->getId(),
               'vectors' => $value['vectors'],
-              'content' => $value['content']
+              'content' => $value['content'],
             ];
           }
         }
@@ -207,7 +207,7 @@ class SearchApiPgVectorBackend extends Database implements PluginFormInterface, 
         ->key(['item_id' => $chunkedItem['drupal_long_id']])
         ->fields([
           'entity_id' => $chunkedItem['drupal_entity_id'],
-          'vectors' => '[' . implode(',', $chunkedItem['vectors']) .']',
+          'vectors' => '[' . implode(',', $chunkedItem['vectors']) . ']',
           'content' => $chunkedItem['content'],
         ])
         ->execute();
@@ -319,7 +319,8 @@ class SearchApiPgVectorBackend extends Database implements PluginFormInterface, 
           $results->setResultCount(1);
         }
       }
-    } catch (\PDOException | DatabaseException $e) {
+    }
+    catch (\PDOException | DatabaseException $e) {
       if ($query instanceof RefinableCacheableDependencyInterface) {
         $query->mergeCacheMaxAge(0);
       }

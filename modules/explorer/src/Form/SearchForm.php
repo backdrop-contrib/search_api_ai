@@ -7,7 +7,6 @@ use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\openai\Utility\StringHelper;
-use Drupal\openai_embeddings\Http\PineconeClient;
 use Drupal\openai_embeddings\VectorClientInterface;
 use Drupal\openai_embeddings\VectorClientPluginManager;
 use Drupal\search_api_pinecone\Plugin\search_api\backend\SearchApiPineconeBackend;
@@ -34,6 +33,8 @@ class SearchForm extends FormBase {
   const CHAT_MAX_TOKENS = 1024;
 
   /**
+   * The vector client plugin.
+   *
    * @var \Drupal\openai_embeddings\VectorClientInterface
    */
   protected VectorClientInterface $vectorClient;

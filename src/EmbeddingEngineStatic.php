@@ -3,6 +3,8 @@
 namespace Drupal\search_api_ai;
 
 /**
+ * Static context for the embedding engines.
+ *
  * Since the data type plugins have no context of where they are being used,
  * we need to use a static class to temporarily store the embed engine during
  * indexing.

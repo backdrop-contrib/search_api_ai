@@ -11,7 +11,7 @@ use Drupal\Core\Utility\Error;
 use Drupal\openai\Utility\StringHelper;
 use Drupal\search_api\IndexInterface;
 use Drupal\search_api\Query\ResultSetInterface;
-use OpenAI;
+use OpenAI\Client;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -27,9 +27,18 @@ class ChatForm extends FormBase {
    *
    * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entityTypeManager
    *   The entity type manager.
+   * @param \Drupal\Core\Routing\CurrentRouteMatch $routeMatch
+   *   The current route match.
+   * @param \OpenAI\Client $openaiClient
+   *   The OpenAI Client.
+   * @param \Drupal\Core\Config\ConfigFactoryInterface $configFactory
+   *   The config factory.
    */
   public function __construct(
     private readonly EntityTypeManagerInterface $entityTypeManager,
+    protected $routeMatch,
+    protected Client $openaiClient,
+    protected $configFactory,
   ) {}
 
   /**
@@ -38,6 +47,9 @@ class ChatForm extends FormBase {
   public static function create(ContainerInterface $container) {
     return new static(
       $container->get('entity_type.manager'),
+      $container->get('current_route_match'),
+      $container->get('openai.client'),
+      $container->get('config.factory'),
     );
   }
 
@@ -152,31 +164,34 @@ class ChatForm extends FormBase {
       'content' => str_replace('[user-prompt]', $user_query, $chat_config['user_message']),
     ];
 
+    // Load the appropriate client.
+    $service = match(TRUE) {
+      str_starts_with($chat_config['chat_model'], 'openai-') => 'openai',
+      str_starts_with($chat_config['chat_model'], 'fireworksai-') => 'fireworksai',
+    };
+    $client = match($service) {
+      'openai' => $this->openaiClient,
+      'fireworksai' => \OpenAI::factory()
+        ->withApiKey($this->configFactory->get('fireworksai.settings')->get('api_key'))
+        ->withBaseUri('https://api.fireworks.ai/inference/v1')
+        ->make(),
+    };
+    $model = match($service) {
+      'openai' => str_replace('openai-', '', $chat_config['chat_model']),
+      'fireworksai' => 'accounts/fireworks/models/' . str_replace('fireworksai-', '', $chat_config['chat_model']),
+    };
+
     // Send the query to OpenAI.
     if ($this->getRequest()->isXmlHttpRequest()) {
       try {
         $http_response = new StreamedResponse();
-        $http_response->setCallback(function () use ($chat_config, $messages) {
-          if (substr($chat_config['chat_model'], 0, 7) == 'openai-') {
-            $stream = \Drupal::service('openai.client')->chat()->createStreamed([
-              'model' => str_replace('openai-', '', $chat_config['chat_model']),
-              'messages' => $messages,
-              'temperature' => (float) $chat_config['temperature'],
-              'max_tokens' => (int) $chat_config['max_tokens'],
-            ]);
-          }
-          else if (substr($chat_config['chat_model'], 0, 12) == 'fireworksai-') {
-            $model = 'accounts/fireworks/models/' . str_replace('fireworksai-', '', $chat_config['chat_model']);
-            $client = OpenAI::factory()
-             ->withApiKey(\Drupal::config('fireworksai.settings')->get('api_key'))
-             ->withBaseUri('https://api.fireworks.ai/inference/v1')
-             ->make();
-            $stream = $client->chat()->createStreamed([
-              'model' => $model,
-              'messages' => $messages,
-              'stream' => TRUE,
-            ]);
-          }
+        $http_response->setCallback(function () use ($chat_config, $messages, $service, $client, $model) {
+          $stream = $client->chat()->createStreamed([
+            'model' => $model,
+            'messages' => $messages,
+            'temperature' => (float) $chat_config['temperature'],
+            'max_tokens' => (int) $chat_config['max_tokens'],
+          ]);
           foreach ($stream as $response) {
             echo $response->choices[0]->delta->content;
             ob_flush();
@@ -185,28 +200,20 @@ class ChatForm extends FormBase {
         });
 
         $form_state->setResponse($http_response);
-      } catch (\Exception $exception) {
+      }
+      catch (\Exception $exception) {
         $this->messenger()
           ->addError("OpenAI exception: {$exception->getMessage()}");
         return;
       }
     }
     else {
-      if (substr($chat_config['chat_model'], 0, 7) == 'openai-') {
-        $chat_response = $this->aiClient->chat()->create([
-          'model' => str_replace('openai-', '', $chat_config['chat_model']),
-          'messages' => $messages,
-          'temperature' => (float) $chat_config['temperature'],
-          'max_tokens' => (int) $chat_config['max_tokens'],
-        ]);
-      }
-      else if (substr($chat_config['chat_model'], 0, 12) == 'fireworksai-') {
-        $model = 'accounts/fireworks/models/' . str_replace('fireworksai-', '', $chat_config['chat_model']);
-        $chat_response = json_decode(\Drupal::service('fireworksai.api')->chatCompletion($messages, $model, [
-          'temperature' => (float) $chat_config['temperature'],
-          'max_tokens' => (int) $chat_config['max_tokens'],
-        ]));
-      }
+      $chat_response = $client->chat()->create([
+        'model' => str_replace('openai-', '', $chat_config['chat_model']),
+        'messages' => $messages,
+        'temperature' => (float) $chat_config['temperature'],
+        'max_tokens' => (int) $chat_config['max_tokens'],
+      ]);
       $form_state->setRebuild();
       $form_state->set('response', $chat_response->choices[0]->message->content);
     }
@@ -224,7 +231,7 @@ class ChatForm extends FormBase {
    * @param \Drupal\Core\Form\FormStateInterface $form_state
    *   The current form state.
    *
-   * @return \Drupal\search_api\Query\ResultSetInterface|NULL
+   * @return \Drupal\search_api\Query\ResultSetInterface|null
    *   The result of the query or NULL if an error occurs.
    *   Errors will be added to the form state with a 'response' key.
    */
@@ -237,10 +244,11 @@ class ChatForm extends FormBase {
 
     $vector_filter_ids = [];
 
-    // If entity types are configured, check if any of them are present in the route.
+    // If entity types are configured, check if any of them are present in the
+    // route.
     if (!empty($chat_config['entity_types'])) {
       foreach ($chat_config['entity_types'] as $entity_type) {
-        if ($entity = \Drupal::routeMatch()->getParameter($entity_type)) {
+        if ($entity = $this->getRouteMatch()->getParameter($entity_type)) {
           $vector_filter_ids[] = "entity:{$entity->getEntityTypeId()}/{$entity->id()}:{$entity->language()->getId()}";
         }
       }
@@ -314,28 +322,27 @@ class ChatForm extends FormBase {
   protected function getChatConfig(FormStateInterface $form_state) {
     $config = $form_state->getBuildInfo()['chat_config'] ?? [];
     return $config + [
-        'index' => NULL,
-        'view' => NULL,
-        'entity_types' => [],
-        'top_k' => 8,
-        'score_threshold' => 0.5,
-        'max_length' => 1024,
-        'model' => 'text-embedding-ada-002',
-        'no_results_message' => "Sorry, I couldn't find what you are looking for.",
-        'error_message' => 'Sorry, something went wrong. Please try again later.',
-        'no_response_message' => 'No answer was provided.',
-        'debug' => FALSE,
-        'chat_model' => 'gpt-4',
-        'temperature' => 0.4,
-        'max_tokens' => 1024,
-        'chat_system_role' => "You are a chat bot to help find resources and provide links and references from the User's private knowledgebase. You will base all your answers off the provided context that you find from the user's knowledgebase. Always return links as HTML.",
-        'assistant_message' => <<<EOF
+      'index' => NULL,
+      'view' => NULL,
+      'entity_types' => [],
+      'top_k' => 8,
+      'score_threshold' => 0.5,
+      'max_length' => 1024,
+      'no_results_message' => "Sorry, I couldn't find what you are looking for.",
+      'error_message' => 'Sorry, something went wrong. Please try again later.',
+      'no_response_message' => 'No answer was provided.',
+      'debug' => FALSE,
+      'chat_model' => 'gpt-4',
+      'temperature' => 0.4,
+      'max_tokens' => 1024,
+      'chat_system_role' => "You are a chat bot to help find resources and provide links and references from the User's private knowledgebase. You will base all your answers off the provided context that you find from the user's knowledgebase. Always return links as HTML.",
+      'assistant_message' => <<<EOF
 I found the following information in the User's Knowledge Base:
 [context]
 
 I will respond with information from the User's Knowledge Base above.
 EOF,
-        'user_message' => <<<EOF
+      'user_message' => <<<EOF
 [user-prompt]
 
 Provide your answer only from the provided context. Do not remind me what I asked you for. Do not apologize. Do not self-reference.

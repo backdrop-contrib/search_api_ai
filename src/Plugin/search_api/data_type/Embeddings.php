@@ -4,7 +4,6 @@ namespace Drupal\search_api_ai\Plugin\search_api\data_type;
 
 use Drupal\openai\Utility\StringHelper;
 use Drupal\search_api\DataType\DataTypePluginBase;
-use Drupal\search_api_ai\DataType\EmbeddingsDataTypePluginBase;
 use Drupal\search_api_ai\EmbeddingEngineStatic;
 use Drupal\search_api_ai\TextChunker;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -63,8 +62,7 @@ class Embeddings extends DataTypePluginBase {
     $chunkMinOverlap = 64;
 
     $chunks = TextChunker::chunkText($value, $chunkMaxSize, $chunkMinOverlap);
-    // @todo: Here we need to add stuff for advanced RAG.
-
+    // @todo Here we need to add stuff for advanced RAG.
     $items = [];
     foreach ($chunks as $delta => $chunk) {
       // Ignore empty strings.

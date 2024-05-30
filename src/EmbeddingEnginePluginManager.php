@@ -9,7 +9,6 @@ use Drupal\Core\Extension\ModuleHandlerInterface;
 use Drupal\Core\Plugin\DefaultPluginManager;
 use Drupal\search_api_ai\Attribute\EmbeddingEngine;
 
-
 /**
  * EmbeddingEngine plugin manager.
  */

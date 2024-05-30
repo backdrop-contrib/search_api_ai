@@ -5,3 +5,4 @@ package: Search
 core_version_requirement: ^9 || ^10
 dependencies:
   - search_api_ai:search_api_ai
+php: 8.2

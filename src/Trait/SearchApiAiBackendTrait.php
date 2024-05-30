@@ -172,4 +172,5 @@ trait SearchApiAiBackendTrait {
     $form_state->set('embeddings_engine', $rule);
     return $form['backend_config']['embeddings_engine_configuration'];
   }
+
 }

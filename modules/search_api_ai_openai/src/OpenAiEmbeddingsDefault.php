@@ -2,13 +2,15 @@
 
 namespace Drupal\search_api_ai_openai;
 
+use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
 use Drupal\Core\StringTranslation\StringTranslationTrait;
 use OpenAI\Client;
+use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
  * The OpenAI embedding defaule for engines.
  */
-class OpenAiEmbeddingsDefault {
+abstract class OpenAiEmbeddingsDefault implements ContainerFactoryPluginInterface {
 
   use StringTranslationTrait;
 
@@ -23,25 +25,27 @@ class OpenAiEmbeddingsDefault {
   protected string $modelName = 'text-davinci-003';
 
   /**
-   * The OpenAI client.
-   *
-   * @var \OpenAI\Client
-   */
-  private Client $client;
-
-  /**
-   * The configuration.
-   *
-   * @var array
-   */
-  private array $config;
-
-  /**
    * Constructs a new OpenAi instance.
+   *
+   * @param array $config
+   *   The configuration.
+   * @param \OpenAI\Client $client
+   *   The OpenAI client.
    */
-  public function __construct(array $config) {
-    $this->config = $config;
-    $this->client = \Drupal::service('openai.client');
+  public function __construct(
+    private array $config,
+    private Client $client,
+  ) {
+  }
+
+  /**
+   * {@inheritdoc}
+   */
+  public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
+    return new static(
+      $configuration,
+      $container->get('openai.client'),
+    );
   }
 
   /**
@@ -89,4 +93,5 @@ class OpenAiEmbeddingsDefault {
   public function getDimension(): int {
     return $this->config['dimension'] ?? $this->modelDimension;
   }
+
 }

@@ -27,7 +27,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
   use PluginFormTrait;
 
   /**
-   * The Milvus host
+   * The Milvus host.
    *
    * @var string
    *   The Milvus host.
@@ -277,7 +277,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
       );
     }
     else {
-     $response = $this->getClient()->vector()->search(
+      $response = $this->getClient()->vector()->search(
         vector: $query->getOption('query_embedding') ?? [],
         collectionName: $this->configuration['collection'],
         dbName: $this->configuration['database'],
@@ -416,4 +416,5 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
   public function setApiKey(string $apiKey) {
     $this->apiKey = $apiKey;
   }
+
 }

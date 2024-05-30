@@ -18,14 +18,14 @@ use Drupal\search_api_ai_openai\OpenAiEmbeddingsDefault;
 )]
 final class TextEmbedding3Small extends OpenAiEmbeddingsDefault implements EmbeddingEngineInterface {
 
-    /**
-    * {@inheritdoc}
-    */
-    protected int $modelDimension = 1536;
+  /**
+   * {@inheritdoc}
+   */
+  protected int $modelDimension = 1536;
 
-    /**
-    * {@inheritdoc}
-    */
-    protected string $modelName = 'text-embedding-3-small';
+  /**
+   * {@inheritdoc}
+   */
+  protected string $modelName = 'text-embedding-3-small';
 
 }

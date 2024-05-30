@@ -3,13 +3,13 @@
 namespace Drupal\search_api_ai_simple_chatbot\Plugin\Block;
 
 use Drupal\Core\Block\BlockBase;
+use Drupal\Core\Config\ConfigFactoryInterface;
 use Drupal\Core\Entity\ContentEntityTypeInterface;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBuilderInterface;
 use Drupal\Core\Form\FormState;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
-use Drupal\search_api_ai\Backend\SearchApiAiBackendPluginBase;
 use Drupal\search_api_ai\SearchApiAiBackendInterface;
 use Drupal\search_api_ai_simple_chatbot\Form\ChatForm;
 use Symfony\Component\DependencyInjection\ContainerInterface;
@@ -30,14 +30,21 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
    *
    * @var \Drupal\Core\Entity\EntityTypeManagerInterface
    */
-  protected readonly EntityTypeManagerInterface $entityTypeManager;
+  protected EntityTypeManagerInterface $entityTypeManager;
 
   /**
    * The form builder.
    *
    * @var \Drupal\Core\Form\FormBuilderInterface
    */
-  protected readonly FormBuilderInterface $formBuilder;
+  protected FormBuilderInterface $formBuilder;
+
+  /**
+   * The config factory.
+   *
+   * @var \Drupal\Core\Config\ConfigFactoryInterface
+   */
+  protected ConfigFactoryInterface $configFactory;
 
   /**
    * {@inheritdoc}
@@ -46,6 +53,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
     $plugin = new static($configuration, $plugin_id, $plugin_definition);
     $plugin->entityTypeManager = $container->get('entity_type.manager');
     $plugin->formBuilder = $container->get('form_builder');
+    $plugin->configFactory = $container->get('config.factory');
     return $plugin;
   }
 
@@ -174,14 +182,14 @@ EOF,
       '#open' => FALSE,
     ];
 
-    $models =  [
+    $models = [
       'openai-gpt-4' => 'gpt-4',
       'openai-gpt-4-turbo' => 'gpt-4-turbo',
       'openai-gpt-4o' => 'gpt-4o',
       'openai-gpt-3.5-turbo' => 'gpt-3.5-turbo',
     ];
     // If Fireworks AI is setup, add the Fireworks AI models.
-    if (\Drupal::config('fireworksai.settings')->get('api_key')) {
+    if ($this->configFactory->get('fireworksai.settings')->get('api_key')) {
       $models['fireworksai-llama-v3-70b-instruct'] = 'llama-v3-70b-instruct';
       $models['fireworksai-mixtral-8x7b-instruct'] = 'mixtral-8x7b-instruct';
     }
@@ -212,7 +220,7 @@ EOF,
       '#max' => 4096,
       '#step' => 1,
       '#default_value' => $this->configuration['max_tokens'],
-      '#description' => $this->t('The maximum number of tokens to generate in the completion. The token count of your prompt plus max_tokens cannot exceed the model\'s context length. Most models have a context length of 2048 tokens (except for the newest models, which support 4096).'),
+      '#description' => $this->t("The maximum number of tokens to generate in the completion. The token count of your prompt plus max_tokens cannot exceed the model's context length. Most models have a context length of 2048 tokens (except for the newest models, which support 4096)."),
     ];
 
     $form['chat']['chat_system_role'] = [
