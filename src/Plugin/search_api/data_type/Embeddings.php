@@ -4,8 +4,9 @@ namespace Drupal\search_api_ai\Plugin\search_api\data_type;
 
 use Drupal\openai\Utility\StringHelper;
 use Drupal\search_api\DataType\DataTypePluginBase;
+use Drupal\search_api_ai\DataType\EmbeddingsDataTypePluginBase;
+use Drupal\search_api_ai\EmbeddingEngineStatic;
 use Drupal\search_api_ai\TextChunker;
-use OpenAI\Client;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
@@ -20,33 +21,49 @@ use Symfony\Component\DependencyInjection\ContainerInterface;
 class Embeddings extends DataTypePluginBase {
 
   /**
-   * The OpenAI Client.
+   * Embeddings engine.
    *
-   * @var \OpenAI\Client
-   *
-   * @todo Abstract the embedding engine.
+   * @var \Drupal\search_api_ai\EmbeddingEngineInterface
+   *   The embeddings engine.
    */
-  protected Client $client;
+  protected $embeddingsEngine;
 
   /**
-   * {@inheritdoc}
+   * Constructor.
+   */
+  public function __construct(array $configuration, $plugin_id, $plugin_definition, EmbeddingEngineStatic $embeddingEngineStatic) {
+    parent::__construct($configuration, $plugin_id, $plugin_definition);
+    // Check if the embeddings engine is in the configuration.
+    if (isset($configuration['embeddings_engine'])) {
+      $this->embeddingsEngine = $configuration['embeddings_engine'];
+    }
+    else {
+      // Otherwise load it from static.
+      $this->embeddingsEngine = $embeddingEngineStatic->getEmbeddingEngine();
+    }
+  }
+
+  /**
+   * Load from dependency injection container.
    */
   public static function create(ContainerInterface $container, array $configuration, $plugin_id, $plugin_definition) {
-    $plugin = parent::create($container, $configuration, $plugin_id, $plugin_definition);
-    $plugin->client = $container->get('openai.client');
-    return $plugin;
+    return new static(
+      $configuration,
+      $plugin_id,
+      $plugin_definition,
+      $container->get('search_api_ai.embedding_engine_static')
+    );
   }
 
   /**
    * {@inheritdoc}
    */
   public function getValue($value) {
-    // @todo Make configurable.
-    $chunkMaxSize = 1536;
+    $chunkMaxSize = $this->embeddingsEngine->getDimension();
     $chunkMinOverlap = 64;
-    $model = 'text-embedding-ada-002';
 
     $chunks = TextChunker::chunkText($value, $chunkMaxSize, $chunkMinOverlap);
+    // @todo: Here we need to add stuff for advanced RAG.
 
     $items = [];
     foreach ($chunks as $delta => $chunk) {
@@ -57,15 +74,14 @@ class Embeddings extends DataTypePluginBase {
 
       $text = StringHelper::prepareText($chunk, [], $chunkMaxSize);
 
-      $response = $this->client->embeddings()->create([
-        'model' => $model,
-        'input' => $text,
-      ]);
+      $vectors = $this->embeddingsEngine->generateEmbeddings($text);
 
-      $items[$delta] = [
-        'content' => $text,
-        'vectors' => $response->toArray()['data'][0]['embedding'],
-      ];
+      if (is_array($vectors)) {
+        $items[$delta] = [
+          'content' => $text,
+          'vectors' => $vectors,
+        ];
+      }
     }
 
     return $items;
