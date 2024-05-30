@@ -1,16 +1,17 @@
 <?php
 
-namespace Drupal\search_api_ai\Form;
+namespace Drupal\search_api_ai_simple_chatbot\Form;
 
 use Drupal\Component\Utility\Html;
 use Drupal\Core\DependencyInjection\DependencySerializationTrait;
 use Drupal\Core\Entity\EntityTypeManagerInterface;
 use Drupal\Core\Form\FormBase;
 use Drupal\Core\Form\FormStateInterface;
+use Drupal\Core\Utility\Error;
 use Drupal\openai\Utility\StringHelper;
 use Drupal\search_api\IndexInterface;
 use Drupal\search_api\Query\ResultSetInterface;
-use OpenAI\Client;
+use OpenAI;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
@@ -24,13 +25,10 @@ class ChatForm extends FormBase {
   /**
    * Construct the OpenAI Search form.
    *
-   * @param \OpenAI\Client $aiClient
-   *   The OpenAI client.
    * @param \Drupal\Core\Entity\EntityTypeManagerInterface $entityTypeManager
    *   The entity type manager.
    */
   public function __construct(
-    private readonly Client $aiClient,
     private readonly EntityTypeManagerInterface $entityTypeManager,
   ) {}
 
@@ -39,7 +37,6 @@ class ChatForm extends FormBase {
    */
   public static function create(ContainerInterface $container) {
     return new static(
-      $container->get('openai.client'),
       $container->get('entity_type.manager'),
     );
   }
@@ -55,7 +52,7 @@ class ChatForm extends FormBase {
    * {@inheritdoc}
    */
   public function buildForm(array $form, FormStateInterface $form_state) {
-    $form['#attached']['library'][] = 'search_api_ai/chat';
+    $form['#attached']['library'][] = 'search_api_ai_simple_chatbot/chat';
 
     $response_id = Html::getId($form_state->getBuildInfo()['block_id'] . '-response');
     $form['response'] = [
@@ -92,7 +89,7 @@ class ChatForm extends FormBase {
         'class' => ['chat-form-send'],
       ],
       '#attached' => [
-        'library' => ['search_api_ai/form-stream'],
+        'library' => ['search_api_ai_simple_chatbot/form-stream'],
       ],
     ];
 
@@ -135,8 +132,8 @@ class ChatForm extends FormBase {
       }
 
       // If the entity can be loaded, prepare a trimmed version as context.
-      if ($entity = $index->loadItem($match->getExtraData('metadata')->item_id)->getValue()) {
-        $content = StringHelper::prepareText(trim($match->getExtraData('metadata')->content), [], 1024);
+      if ($entity = $index->loadItem($match->getExtraData('drupal_entity_id'))->getValue()) {
+        $content = StringHelper::prepareText(trim($match->getExtraData('content')), [], 1024);
         $context .= "Source link: {$entity->toLink()->toString()}\nSnippet: {$content}\n\n";
       }
     }
@@ -160,12 +157,26 @@ class ChatForm extends FormBase {
       try {
         $http_response = new StreamedResponse();
         $http_response->setCallback(function () use ($chat_config, $messages) {
-          $stream = $this->aiClient->chat()->createStreamed([
-            'model' => $chat_config['chat_model'],
-            'messages' => $messages,
-            'temperature' => (float) $chat_config['temperature'],
-            'max_tokens' => (int) $chat_config['max_tokens'],
-          ]);
+          if (substr($chat_config['chat_model'], 0, 7) == 'openai-') {
+            $stream = \Drupal::service('openai.client')->chat()->createStreamed([
+              'model' => str_replace('openai-', '', $chat_config['chat_model']),
+              'messages' => $messages,
+              'temperature' => (float) $chat_config['temperature'],
+              'max_tokens' => (int) $chat_config['max_tokens'],
+            ]);
+          }
+          else if (substr($chat_config['chat_model'], 0, 12) == 'fireworksai-') {
+            $model = 'accounts/fireworks/models/' . str_replace('fireworksai-', '', $chat_config['chat_model']);
+            $client = OpenAI::factory()
+             ->withApiKey(\Drupal::config('fireworksai.settings')->get('api_key'))
+             ->withBaseUri('https://api.fireworks.ai/inference/v1')
+             ->make();
+            $stream = $client->chat()->createStreamed([
+              'model' => $model,
+              'messages' => $messages,
+              'stream' => TRUE,
+            ]);
+          }
           foreach ($stream as $response) {
             echo $response->choices[0]->delta->content;
             ob_flush();
@@ -181,12 +192,21 @@ class ChatForm extends FormBase {
       }
     }
     else {
-      $chat_response = $this->aiClient->chat()->create([
-        'model' => $chat_config['chat_model'],
-        'messages' => $messages,
-        'temperature' => (float) $chat_config['temperature'],
-        'max_tokens' => (int) $chat_config['max_tokens'],
-      ]);
+      if (substr($chat_config['chat_model'], 0, 7) == 'openai-') {
+        $chat_response = $this->aiClient->chat()->create([
+          'model' => str_replace('openai-', '', $chat_config['chat_model']),
+          'messages' => $messages,
+          'temperature' => (float) $chat_config['temperature'],
+          'max_tokens' => (int) $chat_config['max_tokens'],
+        ]);
+      }
+      else if (substr($chat_config['chat_model'], 0, 12) == 'fireworksai-') {
+        $model = 'accounts/fireworks/models/' . str_replace('fireworksai-', '', $chat_config['chat_model']);
+        $chat_response = json_decode(\Drupal::service('fireworksai.api')->chatCompletion($messages, $model, [
+          'temperature' => (float) $chat_config['temperature'],
+          'max_tokens' => (int) $chat_config['max_tokens'],
+        ]));
+      }
       $form_state->setRebuild();
       $form_state->set('response', $chat_response->choices[0]->message->content);
     }
@@ -209,8 +229,11 @@ class ChatForm extends FormBase {
    *   Errors will be added to the form state with a 'response' key.
    */
   protected function getQueryVectors(IndexInterface $index, string $user_query, array $chat_config, FormStateInterface $form_state): ResultSetInterface|NULL {
-    $backend = $index->getServerInstance()->getBackend();
-    $namespace = $backend->getNamespace($index);
+    $server = $index->getServerInstance();
+    $backend = $server->getBackend();
+    /** @var \Drupal\search_api_ai\Backend\SearchApiAiBackendPluginBase $backend */
+    $backend->setEngineConfiguration($backend->getConfiguration());
+    $embedding_engine = $backend->loadEmbeddingsEngine();
 
     $vector_filter_ids = [];
 
@@ -227,6 +250,7 @@ class ChatForm extends FormBase {
     // Only check views config if we have no route matched ids.
     if (empty($vector_filter_ids) && !empty($chat_config['view'])) {
       $view = $this->entityTypeManager->getStorage('view')->load($chat_config['view']);
+      /** @var \Drupal\views\Entity\View $view */
       $view->getExecutable()->execute();
 
       foreach ($view->getExecutable()->result as $resultRow) {
@@ -236,19 +260,16 @@ class ChatForm extends FormBase {
 
     // Create the embedding for the latest question.
     try {
-      $response = $this->aiClient->embeddings()->create([
-        'model' => $chat_config['model'],
-        'input' => $user_query,
-      ])->toArray();
-      $query_embedding = $response['data'][0]['embedding'] ?? NULL;
+      $query_embedding = $embedding_engine->generateEmbeddings($user_query);
       if (!$query_embedding) {
-        $this->logger('search_api_ai')->error('Error retrieving prompt embedding.');
+        $this->logger('search_api_ai_simple_chatbot')->error('Error retrieving prompt embedding.');
         $form_state->set('response', $chat_config['error_message']);
         return NULL;
       }
     }
     catch (\Exception $exception) {
-      watchdog_exception('search_api_ai', $exception);
+      $logger = $this->logger('search_api_ai_simple_chatbot');
+      Error::logException($logger, $exception);
       $form_state->set('response', $chat_config['error_message']);
       return NULL;
     }
@@ -267,16 +288,13 @@ class ChatForm extends FormBase {
 
       $query = $index->query([
         'query_embedding' => $query_embedding,
-        'top_k' => $chat_config['top_k'],
-        'include_metadata' => TRUE,
-        'include_values' => FALSE,
-        'filters' => $filters,
-        'namespace' => $namespace,
+        'limit' => 20,
       ]);
       $results = $query->execute();
     }
     catch (\Exception $exception) {
-      watchdog_exception('search_api_ai', $exception);
+      $logger = $this->logger('search_api_ai_simple_chatbot');
+      Error::logException($logger, $exception);
       $form_state->set('response', $chat_config['error_message']);
       return NULL;
     }

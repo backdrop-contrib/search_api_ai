@@ -1,0 +1,8 @@
+{
+  "name": "drupal/search_api_ai",
+  "description": "Search API AI",
+  "type": "drupal-module",
+  "require": {
+    "drupal/search_api": "^1.34"
+  }
+}

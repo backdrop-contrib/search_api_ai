@@ -1,6 +1,6 @@
 <?php
 
-namespace Drupal\search_api_ai\Plugin\Block;
+namespace Drupal\search_api_ai_simple_chatbot\Plugin\Block;
 
 use Drupal\Core\Block\BlockBase;
 use Drupal\Core\Entity\ContentEntityTypeInterface;
@@ -9,7 +9,9 @@ use Drupal\Core\Form\FormBuilderInterface;
 use Drupal\Core\Form\FormState;
 use Drupal\Core\Form\FormStateInterface;
 use Drupal\Core\Plugin\ContainerFactoryPluginInterface;
-use Drupal\search_api_ai\Form\ChatForm;
+use Drupal\search_api_ai\Backend\SearchApiAiBackendPluginBase;
+use Drupal\search_api_ai\SearchApiAiBackendInterface;
+use Drupal\search_api_ai_simple_chatbot\Form\ChatForm;
 use Symfony\Component\DependencyInjection\ContainerInterface;
 
 /**
@@ -63,7 +65,7 @@ class ChatFormBlock extends BlockBase implements ContainerFactoryPluginInterface
       'error_message' => 'Sorry, something went wrong. Please try again later.',
       'no_response_message' => 'No answer was provided.',
       'debug' => FALSE,
-      'chat_model' => 'gpt-4',
+      'chat_model' => 'gpt-4o',
       'temperature' => 0.4,
       'max_tokens' => 1024,
       'chat_system_role' => "You are a chat bot to help find resources and provide links and references from the User's private knowledgebase. You will base all your answers off the provided context that you find from the user's knowledgebase. Always return links as HTML.",
@@ -97,7 +99,8 @@ EOF,
       ->getStorage('search_api_index')
       ->loadMultiple();
     foreach ($indexes as $index) {
-      if ($index->getServerInstance()?->getBackendId() === 'search_api_pinecone') {
+      /** @var \Drupal\search_api\IndexInterface $index */
+      if ($index->getServerInstance()?->getBackend() instanceof SearchApiAiBackendInterface) {
         $form['index']['#options'][$index->id()] = $index->label();
         if ($index->id() === $this->configuration['index']) {
           $form['index']['#default_value'] = $this->configuration['index'];
@@ -171,17 +174,24 @@ EOF,
       '#open' => FALSE,
     ];
 
+    $models =  [
+      'openai-gpt-4' => 'gpt-4',
+      'openai-gpt-4-turbo' => 'gpt-4-turbo',
+      'openai-gpt-4o' => 'gpt-4o',
+      'openai-gpt-3.5-turbo' => 'gpt-3.5-turbo',
+    ];
+    // If Fireworks AI is setup, add the Fireworks AI models.
+    if (\Drupal::config('fireworksai.settings')->get('api_key')) {
+      $models['fireworksai-llama-v3-70b-instruct'] = 'llama-v3-70b-instruct';
+      $models['fireworksai-mixtral-8x7b-instruct'] = 'mixtral-8x7b-instruct';
+    }
+
     $form['chat']['model'] = [
       '#type' => 'select',
       '#title' => $this->t('Chat model'),
       '#group' => 'advanced',
       '#description' => $this->t('Select which model to use to analyze text. See the <a href="@link">model overview</a> for details about each model.', ['@link' => 'https://platform.openai.com/docs/models/gpt-3.5']),
-      '#options' => [
-        'gpt-4' => 'gpt-4 (currently beta invite only)',
-        'gpt-4-32k' => 'gpt-4-32k (currently beta invite only)',
-        'gpt-3.5-turbo' => 'gpt-3.5-turbo',
-        'gpt-3.5-turbo-0301' => 'gpt-3.5-turbo-0301',
-      ],
+      '#options' => $models,
       '#default_value' => $this->configuration['chat_model'],
     ];
 
