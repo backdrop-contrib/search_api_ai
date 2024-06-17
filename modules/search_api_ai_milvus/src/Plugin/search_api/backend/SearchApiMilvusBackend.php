@@ -287,6 +287,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
     if (empty($query->getOption('query_embedding'))) {
       $response = $this->getClient()->vector()->query(
         collectionName: $this->configuration['collection'],
+        limit: $query->getOption('limit', 10),
         dbName: $this->configuration['database'],
         filter: 'id not in [0]',
         outputFields: ['id', 'drupal_entity_id', 'drupal_long_id', 'content'],
@@ -295,6 +296,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
     else {
       $response = $this->getClient()->vector()->search(
         vector: $query->getOption('query_embedding') ?? [],
+        limit: $query->getOption('limit', 10),
         collectionName: $this->configuration['collection'],
         dbName: $this->configuration['database'],
         outputFields: ['id', 'drupal_entity_id', 'drupal_long_id', 'content'],
