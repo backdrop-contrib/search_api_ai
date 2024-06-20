@@ -68,6 +68,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
       'database' => 'default',
       'collection' => '',
       'embeddings_engine' => NULL,
+      'metric_type' => 'COSINE',
     ];
   }
 
@@ -124,6 +125,19 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
       '#disabled' => $this->configuration['collection'],
     ];
 
+    $form['metric_type'] = [
+      '#type' => 'select',
+      '#title' => $this->t('Metric Type'),
+      '#description' => $this->t('The metric type to use for the collection. This will be generated if it does not exist and cannot be changed.'),
+      '#default_value' => $this->configuration['metric_type'] ?? 'COSINE',
+      '#required' => TRUE,
+      '#options' => [
+        'L2' => 'L2',
+        'IP' => 'IP',
+        'COSINE' => 'COSINE',
+      ],
+    ];
+
     return $form;
   }
 
@@ -160,6 +174,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
         dbName: $form_state->getValue('database'),
         collectionName: $form_state->getValue('collection'),
         dimension: $form_state->getValue('embeddings_engine_configuration')['dimension'],
+        metricType: $form_state->getValue('metric_type'),
       );
     }
   }
@@ -255,6 +270,7 @@ class SearchApiMilvusBackend extends SearchApiAiBackendPluginBase implements Plu
       dbName: $this->configuration['database'],
       collectionName: $this->configuration['collection'],
       dimension: $this->configuration['embeddings_engine_configuration']['dimension'],
+      metricType: $this->configuration['metric_type'],
     );
   }
 
