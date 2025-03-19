@@ -1,0 +1,33 @@
+<?php
+
+/**
+ * Implements hook_autoload_info().
+ */
+function search_api_ai_openai_autoload_info() {
+  return array(
+    'OpenAiEmbeddingsDefault' => 'includes/OpenAiEmbeddingsDefault.inc',
+    'TextEmbeddingAda002' => 'includes/TextEmbeddingAda002.inc',
+    'TextEmbedding3Small' => 'includes/TextEmbedding3Small.inc',
+    'TextEmbedding3Large' => 'includes/TextEmbedding3Large.inc',
+  );
+}
+
+/**
+ * Implements hook_embedding_engine_info().
+ */
+function search_api_ai_openai_embedding_engine_info() {
+  return array(
+    'text-embedding-ada-002' => array(
+      'label' => t('OpenAI Text Embedding Ada 002'),
+      'class' => 'TextEmbeddingAda002',
+    ),
+    'text-embedding-3-small' => array(
+      'label' => t('OpenAI Text Embedding 3 Small'),
+      'class' => 'TextEmbedding3Small',
+    ),
+    'text-embedding-3-large' => array(
+      'label' => t('OpenAI Text Embedding 3 Large'),
+      'class' => 'TextEmbedding3Large',
+    ),
+  );
+}

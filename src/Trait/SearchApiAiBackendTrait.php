@@ -61,20 +61,20 @@ trait SearchApiAiBackendTrait {
    *   The form array.
    */
   public function engineConfigurationForm(array $form, FormStateInterface $form_state) {
-    // It might be a Sub form state, so we need to get the complete form state.
-    if ($form_state instanceof SubformStateInterface) {
-      $form_state = $form_state->getCompleteFormState();
-    }
+    // Ensure form state gets the updated dimensions.
+    $dimension_value = $form_state->get('embeddings_engine_configuration')['dimension']
+      ?? $this->traitConfiguration['embeddings_engine_configuration']['dimension']
+      ?? 768; // Default fallback
 
+    // Embeddings Engine dropdown.
     $form['embeddings_engine'] = [
       '#type' => 'select',
       '#title' => $this->t('Embeddings Engine'),
       '#options' => $this->getEmbeddingEnginesOptions(),
       '#required' => TRUE,
       '#default_value' => $this->traitConfiguration['embeddings_engine'],
-      '#description' => $this->t('The service to use for embeddings. If you change this, everything will be needed to be reindexed.'),
+      '#description' => $this->t('The service to use for embeddings. If you change this, everything will need to be reindexed.'),
       '#weight' => 10,
-      // Callback to update the form on Ajax.
       '#ajax' => [
         'callback' => [$this, 'updateEmbeddingConfigurationForm'],
         'wrapper' => 'embedding-configuration-wrapper',
@@ -83,32 +83,25 @@ trait SearchApiAiBackendTrait {
       ],
     ];
 
+    // Configuration details.
     $form['embeddings_engine_configuration'] = [
       '#type' => 'details',
       '#open' => TRUE,
-      '#title' => 'Embeddings Engine Configuration',
+      '#title' => $this->t('Embeddings Engine Configuration'),
       '#prefix' => '<div id="embedding-configuration-wrapper">',
       '#suffix' => '</div>',
       '#weight' => 20,
     ];
 
+    // Dimensions field should pull from updated form state.
     $form['embeddings_engine_configuration']['dimension'] = [
       '#type' => 'number',
       '#title' => $this->t('Dimensions'),
       '#description' => $this->t('The number of dimensions for the embeddings.'),
-      '#default_value' => $this->traitConfiguration['embeddings_engine_configuration']['dimension'],
+      '#default_value' => $dimension_value,
       '#required' => TRUE,
       '#disabled' => TRUE,
     ];
-
-    // If the embeddings engine is set, add the configuration form.
-    if (!empty($this->traitConfiguration['embeddings_engine']) || $form_state->get('embeddings_engine')) {
-      $plugin_manager = \Drupal::service('plugin.manager.embedding_engine');
-      $rule = $plugin_manager->createInstance($this->traitConfiguration['embeddings_engine'] ?? $form_state->get('embeddings_engine'));
-      foreach ($rule->buildEmbeddingConfigurationForm() as $key => $value) {
-        $form['embeddings_engine_configuration'][$key] = $value;
-      }
-    }
 
     return $form;
   }
@@ -157,20 +150,34 @@ trait SearchApiAiBackendTrait {
   }
 
   /**
-   * Callback to update the embedding configuration form.
-   *
-   * @param array $form
-   *   The form array.
-   * @param \Drupal\Core\Form\FormStateInterface $form_state
-   *   The form state.
-   *
-   * @return array
-   *   The updated form.
+   * AJAX callback to update the embedding engine configuration form.
    */
-  public function updateEmbeddingConfigurationForm(array $form, FormStateInterface $form_state) {
-    $rule = $form_state->getValues()['backend_config']['embeddings_engine'] ?? NULL;
-    $form_state->set('embeddings_engine', $rule);
-    return $form['backend_config']['embeddings_engine_configuration'];
-  }
+  public function updateEmbeddingConfigurationForm(array &$form, FormStateInterface $form_state) {
+    $selected_engine = $form_state->getValue('embeddings_engine');
 
+    if ($selected_engine) {
+      $plugin_manager = \Drupal::service('plugin.manager.embedding_engine');
+      try {
+        $engine_instance = $plugin_manager->createInstance($selected_engine);
+        $dimension_value = $engine_instance->getDimension(); // Use modelDimension
+
+        // Store the new dimension in form state.
+        $form_state->set('embeddings_engine_configuration', ['dimension' => $dimension_value]);
+
+        // Debugging to confirm correct values.
+        /*dpm([
+          'AJAX Updated Engine' => $selected_engine,
+          'AJAX Updated Dimension' => $dimension_value,
+        ]);*/
+      }
+      catch (\Exception $e) {
+        \Drupal::messenger()->addError($this->t('Failed to load embedding engine configuration: @message', [
+          '@message' => $e->getMessage(),
+        ]));
+      }
+    }
+
+    // Ensure only the relevant section updates.
+    return $form['embeddings_engine_configuration'];
+  }
 }

@@ -5,3 +5,19 @@ search_api_ai.test:
     _form: '\Drupal\search_api_ai\Form\ChatForm'
   requirements:
     _access: 'TRUE'
+search_api_ai.embedding_engine_test:
+  path: '/admin/config/search-api-ai/embedding-engine-test'
+  defaults:
+    _controller: '\Drupal\search_api_ai\Controller\EmbeddingEngineTestController::testForm'
+    _title: 'Test Embedding Engine Form'
+  requirements:
+    _permission: 'administer site configuration'
+search_api_ai.embedding_engine_settings:
+  path: '/admin/config/search-api-ai/embedding-engine'
+  defaults:
+    _form: '\Drupal\search_api_ai\Form\EmbeddingEngineConfigForm'
+    _title: 'Embedding Engine Settings'
+  requirements:
+    _permission: 'administer site configuration'
+
+

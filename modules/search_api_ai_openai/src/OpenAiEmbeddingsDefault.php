@@ -17,12 +17,12 @@ abstract class OpenAiEmbeddingsDefault implements ContainerFactoryPluginInterfac
   /**
    * The dimension of the embeddings.
    */
-  protected int $modelDimension = 3072;
+  protected int $modelDimension = 1536;
 
   /**
    * The name of the model.
    */
-  protected string $modelName = 'text-davinci-003';
+  protected string $modelName = 'text-embedding-ada-002';
 
   /**
    * Constructs a new OpenAi instance.

@@ -1,7 +1,0 @@
-name: Search API AI Explorer
-type: module
-description: Provides a way to explore Search API AI.
-package: Search
-core_version_requirement: ^9 || ^10
-dependencies:
-  - search_api_ai:search_api_ai

@@ -1,0 +1,6 @@
+name = Search API AI Explorer
+type = module
+description = Provides a way to explore Search API AI.
+package = Search
+backdrop = 1.x
+dependencies[] = search_api_ai

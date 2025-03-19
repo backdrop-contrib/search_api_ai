@@ -1,0 +1,7 @@
+name = 'Search API AI OpenAI'
+type = module
+description = 'Provide OpenAi embeddings engine for Search API AI.'
+package = Search
+backdrop = 1.x
+dependencies[] = search_api_ai
+dependencies[] = openai

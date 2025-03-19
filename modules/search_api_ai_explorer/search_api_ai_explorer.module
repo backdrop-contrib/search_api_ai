@@ -1,0 +1,404 @@
+<?php
+/**
+ * Implements hook_menu().
+ */
+function search_api_ai_explorer_menu() {
+  $items = [];
+
+  $items['admin/config/openai/search-api-ai-explorer'] = [
+    'title' => 'Search API AI Explorer',
+    'description' => 'Contains a form where you can run ChatGPT using Search API AI as an embedding backend.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => ['search_api_ai_explorer_search_form'],
+    'access arguments' => ['administer site configuration'],
+    'parent' => 'admin/config/openai',
+  ];
+
+  return $items;
+}
+/**
+ * Build the Search API AI Explorer form.
+ */
+function search_api_ai_explorer_search_form($form, &$form_state) {
+  $form['index'] = [
+    '#type' => 'select',
+    '#title' => t('Index'),
+    '#description' => t('Select the Pinecone index for the embeddings store.'),
+    '#options' => [],
+  ];
+
+  // Load all indexes and servers at once.
+  $indexes = entity_load_multiple('search_api_index');
+  $servers = entity_load_multiple('search_api_server');
+
+  foreach ($indexes as $index) {
+    if (empty($index->server)) {
+      continue; // Skip indexes without a server
+    }
+
+    // Find the matching server based on machine_name.
+    $server = NULL;
+    foreach ($servers as $s) {
+      if ($s->machine_name == $index->server) {
+        $server = $s;
+        break;
+      }
+    }
+
+    // Ensure the server exists and is Pinecone.
+    if ($server && isset($server->class) && $server->class == 'pinecone_service') {
+      $form['index']['#options'][$index->machine_name] = $index->name;
+    }
+  }
+
+  if (empty($form['index']['#options'])) {
+    backdrop_set_message(t('No valid Pinecone search indexes found.'), 'warning');
+    $form['index']['#options'] = ['' => t('- No indexes available -')];
+  }
+
+  // Load previously stored messages.
+  $messages = isset($form_state['storage']['messages']) ? $form_state['storage']['messages'] : [];
+  $filtered_messages = [];
+  $first_user_found = FALSE;
+
+  foreach ($messages as $msg) {
+    if ($msg['role'] === 'user') {
+      if (!$first_user_found) {
+        $filtered_messages[] = $msg;
+        $first_user_found = TRUE; // Only include the first user message
+      }
+    } elseif ($msg['role'] === 'assistant') {
+      $filtered_messages[] = $msg; // Always include assistant messages
+    }
+  }
+
+  $form['messages'] = [
+    '#type' => 'markup',
+    '#markup' => '<div>' . implode('<br>', array_map(function ($msg) use ($document_links) {
+        $role = '<strong>' . check_plain(ucfirst($msg['role'])) . ':</strong> ';
+
+        if ($msg['role'] === 'assistant') {
+          // ✅ Allow full response with lists
+          $content = filter_xss($msg['content'], ['a', 'br', 'strong', 'p', 'ol', 'li']);
+
+          // ✅ Ensure answer is visible
+          return $role . '<p>' . nl2br($content) . '</p>';
+        } else {
+          return $role . '<p>' . check_plain($msg['content']) . '</p>';
+        }
+      }, $filtered_messages)) . '</div>',
+  ];
+
+
+
+  // **User Input Field**
+  $form['query'] = [
+    '#type' => 'textarea',
+    '#title' => t('Ask ChatGPT a question'),
+    '#required' => TRUE,
+  ];
+
+  // **Advanced Options**
+  $form['options'] = [
+    '#type' => 'fieldset',
+    '#title' => t('Advanced options'),
+  ];
+  $form['options']['system_messages'] = [
+    '#type' => 'checkbox',
+    '#title' => t('Show system messages'),
+  ];
+
+  // **Submit Button**
+  $form['actions'] = ['#type' => 'actions'];
+  $form['actions']['submit'] = [
+    '#type' => 'submit',
+    '#value' => t('Send'),
+  ];
+
+  return $form;
+}
+
+
+
+/**
+ * Form submission handler for search_api_ai_explorer_search_form().
+ */
+function search_api_ai_explorer_search_form_submit($form, &$form_state) {
+  // Retrieve the index ID and user query.
+  $index_id = $form_state['values']['index'];
+  $query_text = trim($form_state['values']['query']);
+
+  //dpm($index_id, 'Index ID before loading');
+
+  // Load the selected index.
+  $indexes = entity_load_multiple('search_api_index');
+  $index = NULL;
+  foreach ($indexes as $i) {
+    if ($i->machine_name == $index_id) {
+      $index = $i;
+      break;
+    }
+  }
+
+  if (!$index || !is_object($index)) {
+    backdrop_set_message(t('Invalid index selected.'), 'error');
+    return;
+  }
+
+  // Load the associated server.
+  $servers = entity_load_multiple('search_api_server');
+  $server = NULL;
+  foreach ($servers as $s) {
+    if ($s->machine_name == $index->server) {
+      $server = $s;
+      break;
+    }
+  }
+
+  if (!$server) {
+    backdrop_set_message(t('The selected index does not have a valid server.'), 'error');
+    return;
+  }
+
+  // Instantiate PineconeService.
+  $pinecone_service = new PineconeService($server);
+  if (!$index instanceof SearchApiIndex) {
+    backdrop_set_message(t('Invalid index instance for namespace retrieval.'), 'error');
+    return;
+  }
+
+  $namespace = trim($pinecone_service->getNamespace($index));
+  if (strpos($namespace, ':') === 0) {
+    $namespace = substr($namespace, 1);
+  }
+
+  if (!$namespace) {
+    backdrop_set_message(t('Failed to retrieve namespace for Pinecone.'), 'error');
+    return;
+  }
+
+  // Retrieve OpenAI API key.
+  $openai_api_key_name = config_get('openai.settings', 'api_key');
+  $openai_api_key = key_get_key_value($openai_api_key_name);
+
+  if (!$openai_api_key) {
+    backdrop_set_message(t('OpenAI API key is missing.'), 'error');
+    return;
+  }
+
+  $openai = new OpenAIApi($openai_api_key);
+
+  // Load models from configuration.
+  $embedding_model = config_get('openai_embeddings.settings', 'model') ?: 'text-embedding-3-small';
+  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4';
+
+  //dpm($embedding_model, '✅ Using OpenAI Embedding Model');
+  //dpm($chat_model, '✅ Using OpenAI Chat Model');
+
+  if (!is_string($chat_model)) {
+    backdrop_set_message(t('⚠️ Chat model is not a valid string! Using default GPT-4.'), 'warning');
+    //dpm($chat_model, '❌ ERROR: Chat model is not a string!');
+    $chat_model = 'gpt-4';
+  }
+
+  // **Initialize AI Messages**
+  $messages = [
+    [
+      'role' => 'system',
+      'content' => "You are a chatbot that ONLY provides answers using the provided sources.
+                    Do NOT include external information.
+                    Summarize only from these sources and explicitly reference them.",
+    ],
+  ];
+
+  // **Generate Embeddings**
+  try {
+    $embedding_vector = $openai->embedding($query_text, $embedding_model);
+    if (empty($embedding_vector)) {
+      backdrop_set_message(t('Failed to generate embeddings.'), 'error');
+      return;
+    }
+  } catch (Exception $e) {
+    backdrop_set_message(t('Error generating embeddings: @error', ['@error' => $e->getMessage()]), 'error');
+    return;
+  }
+
+  // **Query Pinecone for Matches**
+  try {
+    $query_options = [
+      'vector' => $embedding_vector,
+      'top_k' => 8,
+      'namespace' => $namespace,
+      'include_metadata' => TRUE,
+    ];
+
+    $pinecone_client = new PineconeVectorClient();
+    $vector_results = $pinecone_client->query($query_options);
+
+    //dpm($vector_results, 'Pinecone Query Results');
+
+    if (empty($vector_results['matches'])) {
+      backdrop_set_message(t('No relevant results found in Pinecone.'), 'warning');
+      return;
+    }
+  } catch (Exception $e) {
+    backdrop_set_message(t('Error querying Pinecone: @error', ['@error' => $e->getMessage()]), 'error');
+    return;
+  }
+
+  // **Process Pinecone Results and Add to Messages**
+  $score_threshold = 0.80;
+  $document_links = [];
+  $formatted_sources = [];
+
+  foreach ($vector_results['matches'] as $match) {
+    if ($match['score'] < $score_threshold) {
+      continue;
+    }
+
+    //dpm($match, '🔍 Processing Match');
+
+    if (preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $matches)) {
+      $datasource_id = $matches[1];
+      $item_id = $matches[2];
+
+      //dpm($datasource_id, '✅ Extracted Datasource ID');
+      //dpm($item_id, '✅ Extracted Item ID');
+
+      // Load entity safely
+      $entity = entity_load($datasource_id, $item_id);
+
+      if (!$entity || empty($entity->nid)) {
+        backdrop_set_message(t('⚠️ Could not load entity: @datasource/@item_id', [
+          '@datasource' => $datasource_id,
+          '@item_id' => $item_id,
+        ]), 'warning');
+        continue;
+      }
+
+      $title = check_plain($entity->label());
+      $url = url("node/{$entity->nid}");
+      $snippet = !empty($match['metadata']['content']) ? check_plain(substr($match['metadata']['content'], 0, 500)) : '';
+
+      //($title, '✅ Extracted Title');
+
+      //dpm($title, 'Extracted Title');
+      //dpm($url, 'Extracted Url');
+      //dpm($snippet, 'Extracted Snippet');
+
+      // **Store sources in correct format**
+      $formatted_sources[] = "<a href='$url'>$title</a>: $snippet";
+      $document_links[] = "<a href='$url'>$title</a>";
+    } else {
+      backdrop_set_message(t('⚠️ Invalid match ID format: @id', ['@id' => $match['id'] ?? 'N/A']), 'warning');
+    }
+  }
+
+  //dpm($formatted_sources, 'Formatted Sources');
+
+  // **Store User Input**
+  $messages[] = ['role' => 'user', 'content' => $query_text];
+  // ✅ Step 1: Add initial system message
+  // ✅ Step 1: Add initial system message
+  $messages = [
+    [
+      'role' => 'system',
+      'content' => 'You are a chatbot to help find documents and provide links and references.',
+    ],
+  ];
+
+  // ✅ Step 2: Add sources in multi-line format
+  if (!empty($formatted_sources)) {
+    foreach ($formatted_sources as $source) {
+      // Extract title and snippet separately
+      preg_match("/<a href='([^']+)'>([^<]+)<\/a>: (.+)/", $source, $matches);
+
+      if (count($matches) === 4) {
+        $url = $matches[1];  // Extracted URL
+        $title = $matches[2]; // Extracted Title
+        $snippet = $matches[3]; // Extracted Snippet
+
+        // Convert absolute URLs to relative URLs
+        $url = preg_replace('/https?:\/\/[^\/]+(\/[^\'"]+)/', '$1', $url);
+
+        $messages[] = [
+          'role' => 'system',
+          'content' => "Source: <a href='$url'>$title</a>\nSnippet: " . trim($snippet),
+        ];
+      }
+    }
+  }
+
+  // ✅ Step 3: Add user query
+  $messages[] = [
+    'role' => 'user',
+    'content' => $query_text,
+  ];
+
+  // **Call OpenAI Chat Model**
+  try {
+    //dpm($chat_model, '🛠 Chat Model Before OpenAI Chat API Call');
+    //dpm($messages, '🛠 Messages Before OpenAI Chat API Call');
+
+    $ai_response = $openai->chat($chat_model, $messages, 0.4, 1024);
+    //dpm($ai_response, '✅ OpenAI Chat Response');
+
+    // **Ensure response is correctly formatted**
+    if (!empty($ai_response)) {
+      $ai_response_text = trim($ai_response);
+    } else {
+      //dpm($ai_response, '❌ OpenAI Response was empty or malformed');
+      $ai_response_text = 'No response provided.';
+    }
+
+    //dpm($ai_response_text, '🔍 Extracted AI Response Text BEFORE Storing');
+
+    // 🛠 Remove inline links before storing
+    $ai_response_text = preg_replace('/<a href=[^>]+>([^<]+)<\/a>/', '$1', $ai_response_text);
+
+    // **🛠 Fix: Remove duplicate links**
+    $document_links = array_unique($document_links);
+
+    // **🔧 Append Related Articles to the Response**
+    if (!empty($document_links)) {
+      $ai_response_text .= "<br><br><strong>For more detailed information, you can refer to this content:</strong><ol>";
+
+      foreach ($document_links as $link) {
+        $ai_response_text .= "<li>$link</li>";
+      }
+
+      $ai_response_text .= "</ol>";
+    }
+
+    //dpm($ai_response_text, '📝 Final AI Response Text BEFORE Storing');
+
+    // **Store the AI response**
+    $messages[] = [
+      'role' => 'assistant',
+      'content' => $ai_response_text,
+    ];
+
+    //dpm($messages, 'Final Messages');
+  } catch (Exception $e) {
+    backdrop_set_message(t('OpenAI chat exception: @error', ['@error' => $e->getMessage()]), 'error');
+    return;
+  }
+
+  // ✅ Get system messages checkbox value
+  $show_system_messages = !empty($form_state['values']['system_messages']);
+
+  //dpm($show_system_messages, '✅ Show System Messages Checkbox Value');
+
+  // ✅ Only filter system messages if checkbox is unchecked
+  if (!$show_system_messages) {
+    $messages = array_filter($messages, function ($msg) {
+      return $msg['role'] !== 'system';
+    });
+  }
+
+  // **Store Messages for Display**
+  $form_state['storage']['messages'] = $messages;
+  //dpm($form_state['storage']['messages'], '📌 Stored Messages Before
+  // Rendering');
+  $form_state['rebuild'] = TRUE;
+}

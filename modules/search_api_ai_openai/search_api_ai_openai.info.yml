@@ -1,8 +1,0 @@
-name: 'Search API AI OpenAI'
-type: module
-description: 'Provide OpenAi embeddings engine for Search API AI.'
-package: Search
-core_version_requirement: ^9 || ^10
-dependencies:
-  - search_api_ai:search_api_ai
-  - openai:openai

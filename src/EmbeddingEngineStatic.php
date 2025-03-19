@@ -25,8 +25,12 @@ class EmbeddingEngineStatic {
    *   The embedding engine object.
    */
   public function setEmbeddingEngine($object) {
+    \Drupal::logger('search_api_ai')->debug('Setting embedding engine: @engine', [
+      '@engine' => is_object($object) ? get_class($object) : (is_null($object) ? 'NULL' : gettype($object)),
+    ]);
     $this->embeddingEngine = $object;
   }
+
 
   /**
    * Gets the embedding engine object.
@@ -35,7 +39,12 @@ class EmbeddingEngineStatic {
    *   The embedding engine object.
    */
   public function getEmbeddingEngine() {
+    \Drupal::logger('search_api_ai')->debug('Getting embedding engine: @engine', [
+      '@engine' => is_object($this->embeddingEngine) ? get_class($this->embeddingEngine) : (is_null($this->embeddingEngine) ? 'NULL' : gettype($this->embeddingEngine)),
+    ]);
+    dpm($this->embeddingEngine);
     return $this->embeddingEngine;
   }
+
 
 }

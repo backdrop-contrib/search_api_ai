@@ -32,13 +32,28 @@ class Embeddings extends DataTypePluginBase {
    */
   public function __construct(array $configuration, $plugin_id, $plugin_definition, EmbeddingEngineStatic $embeddingEngineStatic) {
     parent::__construct($configuration, $plugin_id, $plugin_definition);
-    // Check if the embeddings engine is in the configuration.
-    if (isset($configuration['embeddings_engine'])) {
-      $this->embeddingsEngine = $configuration['embeddings_engine'];
+
+    // If the configuration is empty, retrieve it from settings.
+    if (empty($configuration['embeddings_engine']) || empty($configuration['embeddings_engine_configuration'])) {
+      $config = \Drupal::config('search_api_ai.settings');
+      $configuration['embeddings_engine'] = $config->get('embeddings_engine');
+      $configuration['embeddings_engine_configuration'] = $config->get('embeddings_engine_configuration');
+    }
+
+    // Debugging: Ensure constructor gets correct values.
+    /*dpm([
+      'Constructor Engine' => $configuration['embeddings_engine'] ?? 'MISSING',
+      'Constructor Config' => $configuration['embeddings_engine_configuration'] ?? 'MISSING',
+    ]);*/
+
+    // Ensure the engine is instantiated with a valid configuration.
+    if (!empty($configuration['embeddings_engine'])) {
+      $this->embeddingEngine = \Drupal::service('plugin.manager.embedding_engine')
+        ->createInstance($configuration['embeddings_engine'], $configuration['embeddings_engine_configuration']);
     }
     else {
-      // Otherwise load it from static.
-      $this->embeddingsEngine = $embeddingEngineStatic->getEmbeddingEngine();
+      // Load from static storage as a fallback.
+      $this->embeddingEngine = $embeddingEngineStatic->getEmbeddingEngine();
     }
   }
 
@@ -58,21 +73,59 @@ class Embeddings extends DataTypePluginBase {
    * {@inheritdoc}
    */
   public function getValue($value) {
-    $chunkMaxSize = $this->embeddingsEngine->getDimension();
-    $chunkMinOverlap = 64;
+    // Ensure configuration exists.
+    dpm([
+      'Loaded Engine in getValue' => $this->configuration['embeddings_engine'] ?? 'MISSING',
+      'Loaded Config in getValue' => $this->configuration['embeddings_engine_configuration'] ?? 'MISSING',
+    ]);
 
+    // If still missing, force reload from settings.
+    if (empty($this->configuration['embeddings_engine']) || empty($this->configuration['embeddings_engine_configuration'])) {
+      $config = \Drupal::config('search_api_ai.settings');
+      $this->configuration['embeddings_engine'] = $config->get('embeddings_engine');
+      $this->configuration['embeddings_engine_configuration'] = $config->get('embeddings_engine_configuration');
+    }
+
+    // Ensure engine and configuration exist before proceeding.
+    if (empty($this->configuration['embeddings_engine'])) {
+      \Drupal::logger('search_api_ai')->error('No embeddings engine set.');
+      return [];
+    }
+
+    // Create the embedding engine.
+    try {
+      $plugin_manager = \Drupal::service('plugin.manager.embedding_engine');
+      $this->embeddingEngine = $plugin_manager->createInstance(
+        $this->configuration['embeddings_engine'],
+        $this->configuration['embeddings_engine_configuration']
+      );
+    }
+    catch (\Exception $e) {
+      \Drupal::logger('search_api_ai')->error('Failed to initialize embedding engine: @message', [
+        '@message' => $e->getMessage(),
+      ]);
+      return [];
+    }
+
+    // Retrieve the dimension correctly.
+    $chunkMaxSize = $this->embeddingEngine->getDimension();
+    dpm([
+      'Final Engine ID' => $this->configuration['embeddings_engine'],
+      'Final Dimension' => $chunkMaxSize,
+    ]);
+
+    // Process text for embeddings.
+    $chunkMinOverlap = 64;
     $chunks = TextChunker::chunkText($value, $chunkMaxSize, $chunkMinOverlap);
-    // @todo Here we need to add stuff for advanced RAG.
     $items = [];
+
     foreach ($chunks as $delta => $chunk) {
-      // Ignore empty strings.
       if (!mb_strlen($chunk)) {
         continue;
       }
 
       $text = StringHelper::prepareText($chunk, [], $chunkMaxSize);
-
-      $vectors = $this->embeddingsEngine->generateEmbeddings($text);
+      $vectors = $this->embeddingEngine->generateEmbeddings($text);
 
       if (is_array($vectors)) {
         $items[$delta] = [
