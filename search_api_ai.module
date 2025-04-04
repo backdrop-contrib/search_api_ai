@@ -1,404 +1,532 @@
-<?php
+
+
+/**
+ * Implements hook_config_info().
+ */
+function search_api_ai_config_info() {
+  return [
+    'search_api_ai.settings' => [
+      'label' => t('Search Api Ai Settings'),
+      'group' => t('Configuration'),
+    ],
+  ];
+}
+
+/**
+ * Implements hook_autoload_info().
+ *
+ * Autoload classes required for Search API AI.
+ */
+function search_api_ai_autoload_info() {
+  return array(
+    'EmbeddingEnginePluginManager' => 'includes/EmbeddingEnginePluginManager.inc',
+    'EmbeddingEngineStatic' => 'includes/EmbeddingEngineStatic.inc',
+    'EmbeddingEnginePluginBase' => 'includes/EmbeddingEnginePluginBase.inc',
+    'EmbeddingEngineInterface' => 'includes/EmbeddingEngineInterface.inc',
+    'SearchApiAiBackendInterface' => 'includes/SearchApiAiBackendInterface.inc',
+    'TextChunker' => 'includes/TextChunker.inc',
+    'EmbeddingEngine' => 'includes/EmbeddingEngine.inc',
+    'SearchApiAiBackendPluginBase' => 'includes/SearchApiAiBackendPluginBase.inc',
+    'SearchApiAiBackend' => 'includes/SearchApiAiBackend.inc',
+  );
+}
+
+/**
+ * Implements hook_embedding_engine_info().
+ */
+function search_api_ai_embedding_engine_info() {
+  return [
+    'openai' => [
+      'label' => t('OpenAI Embeddings'),
+      'class' => 'OpenAiEmbeddingsDefault',
+    ],
+    'pinecone' => [
+      'label' => t('Pinecone Vector Store'),
+      'class' => 'PineconeVectorClient',
+    ],
+  ];
+}
+
+/**
+ * Implements hook_search_api_data_type_info().
+ */
+function search_api_ai_search_api_data_type_info() {
+  return array(
+    'llm_vector_embedding' => array(
+      'name' => t('Embeddings'),
+      'fallback' => 'string', // Falls back to string if unsupported by the backend.
+      'conversion callback' => 'search_api_ai_convert_embedding',
+    ),
+  );
+}
+
+function search_api_ai_get_embedding_dimension() {
+  $search_api_ai_config = config('search_api_ai.settings');
+
+  $embedding_config = $search_api_ai_config->get('embeddings_engine_configuration') ?? [];
+
+  // Ensure we are correctly retrieving the dimension
+  watchdog('search_api_ai', '🔍 Retrieved embedding dimension from config: @dimension', [
+    '@dimension' => isset($embedding_config['dimension']) ? $embedding_config['dimension'] : 'MISSING',
+  ], WATCHDOG_DEBUG);
+
+  return (int) ($embedding_config['dimension'] ?? 1536);
+}
+
+
+function search_api_ai_convert_embedding($value, $original_type, $type, $field_name = 'unknown_field') {
+  if ($type !== 'llm_vector_embedding') {
+    watchdog('search_api_ai', "⚠️ Unexpected Type: $type", [], WATCHDOG_WARNING);
+    return NULL;
+  }
+
+  if (!is_string($value)) {
+    watchdog('search_api_ai', "❌ Expected a string, received @type for $field_name.", [
+      '@type' => gettype($value),
+    ], WATCHDOG_ERROR);
+    return NULL;
+  }
+
+  $cleaned_text = trim(strip_tags($value));
+  if (empty($cleaned_text)) {
+    watchdog('search_api_ai', "⚠️ Skipping empty text for field: $field_name", [], WATCHDOG_WARNING);
+    return NULL;
+  }
+  $search_api_ai_config = config('search_api_ai.settings');
+  // ✅ Get the correct model name
+  $model = $search_api_ai_config->get('embeddings_engine');
+
+  if (empty($model)) {
+    watchdog('search_api_ai', "❌ No valid embeddings model set.", [], WATCHDOG_ERROR);
+    return NULL;
+  }
+
+  // ✅ Load OpenAI API settings
+  module_load_include('inc', 'openai', 'includes/string_helper');
+  $openai_config = config('openai.settings');
+  $api_key_name = $openai_config->get('api_key');
+  $api_key = key_get_key_value($api_key_name);
+  $openai_api = new OpenAIApi($api_key);
+
+  // ✅ Generate embedding
+  try {
+    $vector = $openai_api->embedding($cleaned_text, $model);
+
+    if (empty($vector) || !is_array($vector)) {
+      watchdog('search_api_ai', "❌ Failed to generate embedding for $field_name", [], WATCHDOG_ERROR);
+      return NULL;
+    }
+
+    // ✅ Ensure correct size
+    $expected_dimension = config_get('search_api_ai.settings', 'embeddings_engine_configuration')['dimension'] ?? 1536;
+    if (count($vector) !== $expected_dimension) {
+      watchdog('search_api_ai', "❌ Invalid vector size for $field_name: Expected $expected_dimension, got " . count($vector), [], WATCHDOG_ERROR);
+      return NULL;
+    }
+
+    return $vector;
+
+  } catch (Exception $e) {
+    watchdog('search_api_ai', "❌ OpenAI API error: " . $e->getMessage(), [], WATCHDOG_ERROR);
+    return NULL;
+  }
+}
+
+/**
+ * Implements hook_init().
+ *
+ * Initializes the plugin manager and stores it globally.
+ */
+function search_api_ai_init() {
+  // Instantiate the plugin manager.
+  $plugin_manager = new EmbeddingEnginePluginManager();
+
+  // Instantiate the static helper class, passing the plugin manager.
+  $embedding_engine_static = new EmbeddingEngineStatic($plugin_manager);
+
+  // Store it in a global variable if needed.
+  $GLOBALS['search_api_ai']['embedding_engine_static'] = $embedding_engine_static;
+}
+
+
 /**
  * Implements hook_menu().
  */
-function search_api_ai_explorer_menu() {
-  $items = [];
+function search_api_ai_menu() {
+  $items = array();
 
-  $items['admin/config/openai/search-api-ai-explorer'] = [
-    'title' => 'Search API AI Explorer',
-    'description' => 'Contains a form where you can run ChatGPT using Search API AI as an embedding backend.',
+  $items['admin/config/search-api-ai/test'] = array(
+    'title' => 'Embedding Engine Test Form',
+    'description' => 'A test form for embedding engine configuration.',
+    'page callback' => 'search_api_ai_embedding_engine_test_form',
+    'access arguments' => array('administer site configuration'),
+    'type' => MENU_NORMAL_ITEM,
+    'parent' => 'admin/config',
+  );
+
+  // Route for the embedding engine settings form.
+  $items['admin/config/search-api-ai/embedding-engine'] = array(
+    'title' => 'Embedding Engine Settings',
     'page callback' => 'backdrop_get_form',
-    'page arguments' => ['search_api_ai_explorer_search_form'],
-    'access arguments' => ['administer site configuration'],
-    'parent' => 'admin/config/openai',
-  ];
+    // Again, convert the Drupal form class to a Backdrop form function.
+    'page arguments' => array('search_api_ai_embedding_engine_config_form'),
+    'access arguments' => array('administer site configuration'),
+  );
 
   return $items;
 }
+
 /**
- * Build the Search API AI Explorer form.
+ * Renders the embedding engine test form.
+ *
+ * @return array
+ *   The renderable form array.
  */
-function search_api_ai_explorer_search_form($form, &$form_state) {
-  $form['index'] = [
+function search_api_ai_embedding_engine_test_form() {
+  // Load helper functions from includes.
+  module_load_include('inc', 'search_api_ai', 'includes/SearchApiAiBackend');
+
+  // Mock configuration for testing.
+  $configuration = array(
+    'embeddings_engine' => NULL,
+    'embeddings_engine_configuration' => array(
+      'dimension' => 768,
+    ),
+  );
+
+  // Initialize form and form state.
+  $form = array();
+  $form_state = array();  // Initialize form state as an array.
+
+  // Pass $form_state by reference.
+  $form = search_api_ai_engine_configuration_form($form, $form_state, $configuration);
+
+  return $form;
+}
+
+/**
+ * Build the configuration form for selecting and configuring the embedding engine.
+ */
+function search_api_ai_embedding_engine_config_form($form, &$form_state) {
+  // Load existing configuration.
+  $config = config_get('search_api_ai.settings');
+
+  $selected_engine = $form_state['values']['embeddings_engine'] ??
+    ($config['embeddings_engine'] ?? '');
+
+  // Default embedding dimension.
+  $engine_config = $config['embeddings_engine_configuration'] ?? ['dimension' => 768];
+
+  // Load available embedding engines.
+  $all_engines = module_invoke_all('embedding_engine_info');
+
+  // Filter only valid embedding engines dynamically.
+  $embedding_engines = array_filter($all_engines, function ($engine) {
+    return isset($engine['class']) && class_exists($engine['class']) && is_subclass_of($engine['class'], 'OpenAiEmbeddingsDefault');
+  });
+
+  // Populate the form options using **model name from the class**.
+  $options = [];
+  foreach ($embedding_engines as $id => $engine) {
+    $engine_class = $engine['class'];
+    if (class_exists($engine_class)) {
+      try {
+        $engine_instance = new $engine_class([], NULL);
+        $options[$id] = method_exists($engine_instance, 'getModelName') ?
+          $engine_instance->getModelName() : $id;
+      } catch (Exception $e) {
+        watchdog('search_api_ai', 'Error instantiating embedding engine @engine: @message', [
+          '@engine' => $id,
+          '@message' => $e->getMessage(),
+        ], WATCHDOG_ERROR);
+      }
+    }
+  }
+
+  // Initialize dimension with a fallback value.
+  $dimension_value = $engine_config['dimension'] ?? 768;
+
+  // Set form elements.
+  $form['embeddings_engine'] = [
     '#type' => 'select',
-    '#title' => t('Index'),
-    '#description' => t('Select the Pinecone index for the embeddings store.'),
-    '#options' => [],
+    '#title' => t('Embedding Engine'),
+    '#options' => $options,
+    '#default_value' => $selected_engine,
+    '#description' => t('Select the embedding engine to use.'),
+    '#ajax' => [
+      'callback' => 'search_api_ai_update_embedding_dimension',
+      'wrapper' => 'embedding-dimension-wrapper', // This should match the fieldset wrapper
+      'event' => 'change',
+    ],
   ];
 
-  // Load all indexes and servers at once.
-  $indexes = entity_load_multiple('search_api_index');
-  $servers = entity_load_multiple('search_api_server');
-
-  foreach ($indexes as $index) {
-    if (empty($index->server)) {
-      continue; // Skip indexes without a server
-    }
-
-    // Find the matching server based on machine_name.
-    $server = NULL;
-    foreach ($servers as $s) {
-      if ($s->machine_name == $index->server) {
-        $server = $s;
-        break;
-      }
-    }
-
-    // Ensure the server exists and is Pinecone.
-    if ($server && isset($server->class) && $server->class == 'pinecone_service') {
-      $form['index']['#options'][$index->machine_name] = $index->name;
-    }
-  }
-
-  if (empty($form['index']['#options'])) {
-    backdrop_set_message(t('No valid Pinecone search indexes found.'), 'warning');
-    $form['index']['#options'] = ['' => t('- No indexes available -')];
-  }
-
-  // Retrieve previous messages.
-  $messages = isset($form_state['storage']['messages']) ? $form_state['storage']['messages'] : [];
-  $show_system = !empty($form_state['values']['system_messages']);
-
-  // Filter messages based on "Show system messages" setting.
-  $filtered_messages = [];
-  $first_user_found = FALSE;
-
-  foreach ($messages as $msg) {
-    if ($msg['role'] === 'user') {
-      if (!$first_user_found) {
-        $filtered_messages[] = $msg;
-        $first_user_found = TRUE;
-      }
-    } elseif ($msg['role'] === 'assistant' || ($show_system && $msg['role'] === 'system')) {
-      $filtered_messages[] = $msg;
-    }
-  }
-
-  $form['messages'] = [
-    '#type' => 'markup',
-    '#markup' => '<div>' . implode('<br>', array_map(function ($msg) {
-        $role = '<strong>' . check_plain(ucfirst($msg['role'])) . ':</strong> ';
-        $content = filter_xss($msg['content'], ['a', 'br', 'strong', 'p', 'ol', 'li']);
-        return $role . '<p>' . nl2br($content) . '</p>';
-      }, $filtered_messages)) . '</div>',
-  ];
-
-  // User Input Field
-  $form['query'] = [
-    '#type' => 'textarea',
-    '#title' => t('Ask ChatGPT a question'),
-    '#required' => TRUE,
-  ];
-
-  // Advanced Options
-  $form['options'] = [
+  $form['embeddings_engine_configuration'] = [
     '#type' => 'fieldset',
-    '#title' => t('Advanced options'),
-  ];
-  $form['options']['system_messages'] = [
-    '#type' => 'checkbox',
-    '#title' => t('Show system messages'),
-    '#default_value' => !empty($form_state['values']['system_messages']),
+    '#title' => t('Embedding Engine Configuration'),
+    '#prefix' => '<div id="embedding-dimension-wrapper">',
+    '#suffix' => '</div>',
   ];
 
-  // Submit Button
+  $form['embeddings_engine_configuration']['dimension'] = [
+    '#type' => 'textfield',
+    '#title' => t('Embedding Dimension'),
+    '#default_value' => $dimension_value,
+    '#description' => t('The number of dimensions for embeddings.'),
+  ];
+
   $form['actions'] = ['#type' => 'actions'];
   $form['actions']['submit'] = [
     '#type' => 'submit',
-    '#value' => t('Send'),
+    '#value' => t('Save Configuration'),
   ];
 
   return $form;
 }
 
 /**
- * Form submission handler for search_api_ai_explorer_search_form().
+ * AJAX Callback to update embedding dimension dynamically.
  */
-function search_api_ai_explorer_search_form_submit($form, &$form_state) {
-  // Retrieve the index ID and user query.
-  $index_id = $form_state['values']['index'];
-  $query_text = trim($form_state['values']['query']);
+function search_api_ai_update_embedding_dimension($form, &$form_state) {
+  $selected_engine = $form_state['values']['embeddings_engine'] ?? NULL;
+  $dimension_value = 768; // Default
 
-  //dpm($index_id, 'Index ID before loading');
+  // Load available embedding engines.
+  $all_engines = module_invoke_all('embedding_engine_info');
 
-  // Load the selected index.
-  $indexes = entity_load_multiple('search_api_index');
-  $index = NULL;
-  foreach ($indexes as $i) {
-    if ($i->machine_name == $index_id) {
-      $index = $i;
-      break;
+  if ($selected_engine && isset($all_engines[$selected_engine])) {
+    $engine_class = $all_engines[$selected_engine]['class'];
+
+    if (class_exists($engine_class)) {
+      try {
+        // Retrieve OpenAI API key from configuration.
+        $api_key_name = config_get('openai.settings', 'api_key');
+        $api_key = key_get_key_value($api_key_name);
+
+        if (!$api_key) {
+          throw new Exception('OpenAI API key is missing.');
+        }
+
+        // Create OpenAI client instance.
+        $client = new OpenAIApi($api_key);
+
+        // Create embedding engine instance with correct arguments.
+        $engine_instance = new $engine_class(config_get('search_api_ai.settings'), $client);
+
+        // Get the dimension value dynamically.
+        if (method_exists($engine_instance, 'getDimension')) {
+          $dimension_value = $engine_instance->getDimension();
+        }
+      } catch (Exception $e) {
+        watchdog('search_api_ai', 'Failed to update dimension for @engine: @message', [
+          '@engine' => $selected_engine,
+          '@message' => $e->getMessage(),
+        ], WATCHDOG_ERROR);
+      }
     }
   }
 
-  if (!$index || !is_object($index)) {
-    backdrop_set_message(t('Invalid index selected.'), 'error');
-    return;
-  }
+  // Update the dimension field dynamically.
+  $form['embeddings_engine_configuration']['dimension']['#value'] = $dimension_value;
 
-  // Load the associated server.
-  $servers = entity_load_multiple('search_api_server');
-  $server = NULL;
-  foreach ($servers as $s) {
-    if ($s->machine_name == $index->server) {
-      $server = $s;
-      break;
+  return $form['embeddings_engine_configuration'];
+}
+
+/**
+ * Submit handler for the embedding engine configuration form.
+ */
+function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) {
+  $selected_engine = $form_state['values']['embeddings_engine'] ?? '';
+  $engine_config = $form_state['values']['embeddings_engine_configuration'] ?? ['dimension' => 768];
+
+  // Load available embedding engines.
+  $all_engines = module_invoke_all('embedding_engine_info');
+
+  if ($selected_engine && isset($all_engines[$selected_engine])) {
+    $engine_class = $all_engines[$selected_engine]['class'];
+
+    if (class_exists($engine_class)) {
+      try {
+        // Retrieve OpenAI API key.
+        $api_key_name = config_get('openai.settings', 'api_key');
+        $api_key = key_get_key_value($api_key_name);
+        if (!$api_key) {
+          throw new Exception('OpenAI API key is missing.');
+        }
+
+        // Create OpenAI client instance.
+        $client = new OpenAIApi($api_key);
+        $engine_instance = new $engine_class(config_get('search_api_ai.settings'), $client);
+
+        // Retrieve **clean model name** from the class.
+        $model_name = method_exists($engine_instance, 'getModelName')
+          ? $engine_instance->getModelName()
+          : $selected_engine;
+
+        // Retrieve dimension from the selected engine.
+        if (method_exists($engine_instance, 'getDimension')) {
+          $engine_config['dimension'] = $engine_instance->getDimension();
+        }
+      } catch (Exception $e) {
+        backdrop_set_message(t('Failed to load embedding engine: @message', [
+          '@message' => $e->getMessage(),
+        ]), 'error');
+        watchdog('search_api_ai', 'Error initializing embedding engine @engine: @message', [
+          '@engine' => $selected_engine,
+          '@message' => $e->getMessage(),
+        ], WATCHDOG_ERROR);
+      }
     }
   }
 
-  if (!$server) {
-    backdrop_set_message(t('The selected index does not have a valid server.'), 'error');
+  // Save the configuration using **model name instead of engine ID**.
+  config_set('search_api_ai.settings', 'embeddings_engine', $model_name);
+  config_set('search_api_ai.settings', 'embeddings_engine_configuration', $engine_config);
+
+  backdrop_set_message(t('Embedding engine configuration has been saved.'));
+}
+
+/**
+ * Implements hook_search_api_index_items_alter().
+ *
+ * This hook alters items during indexing to set the embedding engine.
+ *
+ * @param array $items
+ *   The items being indexed.
+ * @param object $index
+ *   The index object.
+ */
+function search_api_ai_search_api_index_items_alter(array &$items, SearchApiIndex $index) {
+  global $search_api_ai_vectors;
+
+  if (!isset($search_api_ai_vectors)) {
+    $search_api_ai_vectors = [];
+  }
+
+  watchdog('search_api_ai', '🔄 Altering index items for @index', [
+    '@index' => $index->machine_name
+  ], WATCHDOG_NOTICE);
+
+  // ✅ Load Search API index configuration
+  $query = db_select('search_api_index', 's')
+    ->fields('s', ['options'])
+    ->condition('machine_name', $index->machine_name)
+    ->execute()
+    ->fetchField();
+
+  if (!$query) {
+    watchdog('search_api_ai', "❌ Could not load index configuration.", [], WATCHDOG_ERROR);
     return;
   }
 
-  // Instantiate PineconeService.
-  $pinecone_service = new PineconeService($server);
-  if (!$index instanceof SearchApiIndex) {
-    backdrop_set_message(t('Invalid index instance for namespace retrieval.'), 'error');
+  // ✅ Extract field settings from index options
+  $index_options = unserialize($query);
+  if (empty($index_options['fields']) || !is_array($index_options['fields'])) {
+    watchdog('search_api_ai', "❌ No valid fields found in index configuration.", [], WATCHDOG_ERROR);
     return;
   }
 
-  $namespace = trim($pinecone_service->getNamespace($index));
-  if (strpos($namespace, ':') === 0) {
-    $namespace = substr($namespace, 1);
-  }
-
-  if (!$namespace) {
-    backdrop_set_message(t('Failed to retrieve namespace for Pinecone.'), 'error');
-    return;
-  }
-
-  // Retrieve OpenAI API key.
-  $openai_api_key_name = config_get('openai.settings', 'api_key');
-  $openai_api_key = key_get_key_value($openai_api_key_name);
-
-  if (!$openai_api_key) {
-    backdrop_set_message(t('OpenAI API key is missing.'), 'error');
-    return;
-  }
-
-  $openai = new OpenAIApi($openai_api_key);
-
-  // Load models from configuration.
-  $embedding_model = config_get('openai_embeddings.settings', 'model') ?: 'text-embedding-3-small';
-  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4';
-
-  //dpm($embedding_model, '✅ Using OpenAI Embedding Model');
-  //dpm($chat_model, '✅ Using OpenAI Chat Model');
-
-  if (!is_string($chat_model)) {
-    backdrop_set_message(t('⚠️ Chat model is not a valid string! Using default GPT-4.'), 'warning');
-    //dpm($chat_model, '❌ ERROR: Chat model is not a string!');
-    $chat_model = 'gpt-4';
-  }
-
-  // **Initialize AI Messages**
-  $messages = [
-    [
-      'role' => 'system',
-      'content' => "You are a chatbot that ONLY provides answers using the provided sources.
-                    Do NOT include external information.
-                    Summarize only from these sources and explicitly reference them.",
-    ],
-  ];
-
-  // **Generate Embeddings**
-  try {
-    $embedding_vector = $openai->embedding($query_text, $embedding_model);
-    if (empty($embedding_vector)) {
-      backdrop_set_message(t('Failed to generate embeddings.'), 'error');
-      return;
+  // ✅ Identify fields that need embedding
+  $embedding_fields = [];
+  foreach ($index_options['fields'] as $field_name => $field_info) {
+    if (!empty($field_info['real_type']) && $field_info['real_type'] === 'llm_vector_embedding') {
+      $embedding_fields[] = $field_name;
     }
-  } catch (Exception $e) {
-    backdrop_set_message(t('Error generating embeddings: @error', ['@error' => $e->getMessage()]), 'error');
-    return;
   }
 
-  // **Query Pinecone for Matches**
-  try {
-    $query_options = [
-      'vector' => $embedding_vector,
-      'top_k' => 8,
-      'namespace' => $namespace,
-      'include_metadata' => TRUE,
-    ];
+  // ✅ Load configured embedding dimension from settings
+  $search_api_ai_config = config('search_api_ai.settings');
+  $expected_dimension = $search_api_ai_config->get('embeddings_engine_configuration')['dimension'] ?? 1536;
 
-    $pinecone_client = new PineconeVectorClient();
-    $vector_results = $pinecone_client->query($query_options);
+  watchdog('search_api_ai', "🛠 Using embedding dimension: @dimension", [
+    '@dimension' => $expected_dimension
+  ], WATCHDOG_DEBUG);
 
-    //dpm($vector_results, 'Pinecone Query Results');
-
-    if (empty($vector_results['matches'])) {
-      backdrop_set_message(t('No relevant results found in Pinecone.'), 'warning');
-      return;
-    }
-  } catch (Exception $e) {
-    backdrop_set_message(t('Error querying Pinecone: @error', ['@error' => $e->getMessage()]), 'error');
-    return;
-  }
-
-  // **Process Pinecone Results and Add to Messages**
-  $score_threshold = 0.80;
-  $document_links = [];
-  $formatted_sources = [];
-
-  foreach ($vector_results['matches'] as $match) {
-    if ($match['score'] < $score_threshold) {
+  // Process each entity for embedding
+  foreach ($items as $id => &$entity) {
+    if (!is_object($entity)) {
       continue;
     }
 
-    //dpm($match, '🔍 Processing Match');
+    // ✅ Correctly Extract nid['value']
+    $nid = isset($entity->nid) ? $entity->nid : NULL;
 
-    if (preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $matches)) {
-      $datasource_id = $matches[1];
-      $item_id = $matches[2];
-
-      //dpm($datasource_id, '✅ Extracted Datasource ID');
-      //dpm($item_id, '✅ Extracted Item ID');
-
-      // Load entity safely
-      $entity = entity_load($datasource_id, $item_id);
-
-      if (!$entity || empty($entity->nid)) {
-        backdrop_set_message(t('⚠️ Could not load entity: @datasource/@item_id', [
-          '@datasource' => $datasource_id,
-          '@item_id' => $item_id,
-        ]), 'warning');
-        continue;
-      }
-
-      $title = check_plain($entity->label());
-      $url = url("node/{$entity->nid}");
-      $snippet = !empty($match['metadata']['content']) ? check_plain(substr($match['metadata']['content'], 0, 500)) : '';
-
-      //($title, '✅ Extracted Title');
-
-      //dpm($title, 'Extracted Title');
-      //dpm($url, 'Extracted Url');
-      //dpm($snippet, 'Extracted Snippet');
-
-      // **Store sources in correct format**
-      $formatted_sources[] = "<a href='$url'>$title</a>: $snippet";
-      $document_links[] = "<a href='$url'>$title</a>";
-    } else {
-      backdrop_set_message(t('⚠️ Invalid match ID format: @id', ['@id' => $match['id'] ?? 'N/A']), 'warning');
-    }
-  }
-
-  //dpm($formatted_sources, 'Formatted Sources');
-
-  // **Store User Input**
-  $messages[] = ['role' => 'user', 'content' => $query_text];
-  // ✅ Step 1: Add initial system message
-  // ✅ Step 1: Add initial system message
-  $messages = [
-    [
-      'role' => 'system',
-      'content' => 'You are a chatbot to help find documents and provide links and references.',
-    ],
-  ];
-
-  // ✅ Step 2: Add sources in multi-line format
-  if (!empty($formatted_sources)) {
-    foreach ($formatted_sources as $source) {
-      // Extract title and snippet separately
-      preg_match("/<a href='([^']+)'>([^<]+)<\/a>: (.+)/", $source, $matches);
-
-      if (count($matches) === 4) {
-        $url = $matches[1];  // Extracted URL
-        $title = $matches[2]; // Extracted Title
-        $snippet = $matches[3]; // Extracted Snippet
-
-        // Convert absolute URLs to relative URLs
-        $url = preg_replace('/https?:\/\/[^\/]+(\/[^\'"]+)/', '$1', $url);
-
-        $messages[] = [
-          'role' => 'system',
-          'content' => "Source: <a href='$url'>$title</a>\nSnippet: " . trim($snippet),
-        ];
-      }
-    }
-  }
-
-  // ✅ Step 3: Add user query
-  $messages[] = [
-    'role' => 'user',
-    'content' => $query_text,
-  ];
-
-  // **Call OpenAI Chat Model**
-  try {
-    //dpm($chat_model, '🛠 Chat Model Before OpenAI Chat API Call');
-    //dpm($messages, '🛠 Messages Before OpenAI Chat API Call');
-
-    $ai_response = $openai->chat($chat_model, $messages, 0.4, 1024);
-    dpm($ai_response, '✅ OpenAI Chat Response');
-
-    // **Ensure response is correctly formatted**
-    if (!empty($ai_response)) {
-      $ai_response_text = trim($ai_response);
-    } else {
-      //dpm($ai_response, '❌ OpenAI Response was empty or malformed');
-      $ai_response_text = 'No response provided.';
+    if (empty($nid)) {
+      watchdog('search_api_ai', '⚠️ Skipping entity @id due to missing nid. Raw nid: <pre>@nid</pre>', [
+        '@id' => $id,
+        '@nid' => print_r($entity->nid, TRUE),
+      ], WATCHDOG_WARNING);
+      continue;
     }
 
-    dpm($ai_response_text, '🔍 Extracted AI Response Text BEFORE Storing');
+    // ✅ Process each field independently
+    $field_embeddings = [];
 
-    // **Remove Inline Citations (Both HTML and Markdown)**
-    // **Remove Inline Citations (Both HTML and Markdown)**
-    $ai_response_text = preg_replace([
-      '/<a href=[^>]+>([^<]+)<\/a>/', // Remove HTML links
-      '/\[(.*?)\]\((.*?)\)/'          // Remove Markdown links
-    ], '$1', $ai_response_text);
+    foreach ($embedding_fields as $field_name) {
+      $real_field_name = ($field_name === 'body:value') ? 'body' : $field_name;
+      $field_texts = [];
 
-    // **Ensure Document Links are Unique**
-    $document_links = array_unique($document_links);
-
-    // **Append Document References Only Once**
-    if (!empty($document_links)) {
-      $ai_response_text .= "<br><br><strong>For more detailed information, you can refer to:</strong><ol>";
-
-      foreach ($document_links as $link) {
-        if (!empty(trim($link))) {
-          $ai_response_text .= "<li>$link</li>";
+      if (!empty($entity->{$real_field_name})) {
+        if (is_array($entity->{$real_field_name})) {
+          foreach ($entity->{$real_field_name} as $lang => $values) {
+            if (is_array($values)) {
+              foreach ($values as $delta => $value_data) {
+                if (!empty($value_data['value']) && is_string($value_data['value'])) {
+                  $cleaned_text = trim(strip_tags($value_data['value']));
+                  if (!empty($cleaned_text)) {
+                    $field_texts[] = $cleaned_text;
+                  }
+                }
+              }
+            }
+          }
+        } else {
+          $cleaned_text = trim(strip_tags($entity->{$real_field_name}));
+          if (!empty($cleaned_text)) {
+            $field_texts[] = $cleaned_text;
+          }
         }
       }
 
-      $ai_response_text .= "</ol>";
+      foreach ($field_texts as $text) {
+        if (empty($text)) {
+          watchdog('search_api_ai', "⚠️ Skipping empty text for $real_field_name.", [], WATCHDOG_WARNING);
+          continue;
+        }
+
+        $converted_value = search_api_ai_convert_embedding($text, 'string', 'llm_vector_embedding', $real_field_name);
+
+        if (!empty($converted_value)) {
+          // ✅ Ensure the embedding has the correct size
+          if (!is_array($converted_value) || count($converted_value) !== $expected_dimension) {
+            watchdog('search_api_ai', "❌ Invalid vector size for $real_field_name in item $nid: Expected $expected_dimension, got " . count($converted_value), [], WATCHDOG_ERROR);
+            continue;
+          }
+
+          $field_embeddings[$real_field_name] = [
+            'content' => $text,
+            'vectors' => $converted_value,
+          ];
+        } else {
+          watchdog('search_api_ai', "❌ Failed to generate embedding for $real_field_name", [], WATCHDOG_ERROR);
+        }
+      }
     }
 
+    // ✅ Store embeddings in the global vector storage
+    if (!empty($field_embeddings)) {
+      $search_api_ai_vectors[$nid] = [
+        'nid' => $nid,
+        'vectors' => $field_embeddings,
+      ];
 
-
-    //dpm($ai_response_text, '📝 Final AI Response Text BEFORE Storing');
-
-    // **Store the AI response**
-    $messages[] = [
-      'role' => 'assistant',
-      'content' => $ai_response_text,
-    ];
-
-    //dpm($messages, 'Final Messages');
-  } catch (Exception $e) {
-    backdrop_set_message(t('OpenAI chat exception: @error', ['@error' => $e->getMessage()]), 'error');
-    return;
+      watchdog('search_api_ai', '🛠 Final vectors stored for nid @nid: <pre>@vectors</pre>', [
+        '@nid' => $nid,
+        '@vectors' => print_r($search_api_ai_vectors[$nid], TRUE),
+      ], WATCHDOG_DEBUG);
+    }
   }
 
-  // ✅ Get system messages checkbox value
-  $show_system_messages = !empty($form_state['values']['system_messages']);
-
-  //dpm($show_system_messages, '✅ Show System Messages Checkbox Value');
-
-  // ✅ Only filter system messages if checkbox is unchecked
-  if (!$show_system_messages) {
-    $messages = array_filter($messages, function ($msg) {
-      return $msg['role'] !== 'system';
-    });
-  }
-
-  // **Store Messages for Display**
-  $form_state['storage']['messages'] = $messages;
-  //dpm($form_state['storage']['messages'], '📌 Stored Messages Before
-  // Rendering');
-  $form_state['rebuild'] = TRUE;
+  watchdog('search_api_ai', '✅ Finished altering index items for @index', [
+    '@index' => $index->machine_name
+  ], WATCHDOG_NOTICE);
 }
