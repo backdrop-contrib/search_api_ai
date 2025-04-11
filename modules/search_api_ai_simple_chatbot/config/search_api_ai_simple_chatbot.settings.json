@@ -1,0 +1,22 @@
+{
+    "_config_name": "search_api_ai_simple_chatbot.settings",
+    "chat_config": {
+        "index": "ai_search",
+        "view": "",
+        "entity_types": [],
+        "no_results_message": "Sorry, I couldn't find what you are looking for.",
+        "error_message": "Sorry, something went wrong. Please try again later.",
+        "no_response_message": "No answer was provided.",
+        "chat_model": "gpt-4o-mini",
+        "temperature": "0.4",
+        "max_tokens": "1024",
+        "chat_system_role": "You are a chat bot to help find resources and provide links and references from the User's private knowledgebase. You will base all your answers off the provided context that you find from the user's knowledgebase. Always return links as HTML.",
+        "assistant_message": "I found the following information in the User's Knowledge Base:\r\n[context]\r\n\r\nI will respond with information from the User's Knowledge Base above.",
+        "user_message": "[user-prompt]\r\n\r\nProvide your answer only from the provided context. Do not remind me what I asked you for. Do not apologize. Do not self-reference.",
+        "top_k": "4",
+        "score_threshold": "0.5",
+        "max_length": "512",
+        "embedding_model": "text-embedding-3-small",
+        "debug": false
+    }
+}

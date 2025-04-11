@@ -182,7 +182,7 @@ class PineconeService extends SearchApiAbstractService {
     // Construct Pinecone query parameters
     $query_parameters = [
       'vector' => $query_embedding,
-      'top_k' => $query->getOption('top_k') ?? 10,
+      'top_k' => $query->getOption('top_k') ?? 5,
       'include_metadata' => $query->getOption('include_metadata') ?? true,
       'include_values' => true,
       'filter' => $query->getOption('filters') ?? [],
@@ -298,7 +298,7 @@ class PineconeService extends SearchApiAbstractService {
       // Perform a dummy query in the namespace with top_k=1
       $query_parameters = [
         'vector' => array_fill(0, 1536, 0), // Dummy zero vector (1536-dim for OpenAI embeddings)
-        'top_k' => 1,
+        'top_k' => 5,
         'namespace' => $namespace,
         'include_values' => false,
         'include_metadata' => false,

@@ -189,11 +189,11 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   $openai = new OpenAIApi($openai_api_key);
 
   // Load models from configuration.
-  $embedding_model = config_get('openai_embeddings.settings', 'model') ?: 'text-embedding-3-small';
+  $embedding_model = config_get('search_api_ai.settings', 'model') ?: 'text-embedding-3-small';
   $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4';
 
-  //dpm($embedding_model, '✅ Using OpenAI Embedding Model');
-  //dpm($chat_model, '✅ Using OpenAI Chat Model');
+  dpm($embedding_model, '✅ Using OpenAI Embedding Model');
+  dpm($chat_model, '✅ Using OpenAI Chat Model');
 
   if (!is_string($chat_model)) {
     backdrop_set_message(t('⚠️ Chat model is not a valid string! Using default GPT-4.'), 'warning');
@@ -235,7 +235,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     $pinecone_client = new PineconeVectorClient();
     $vector_results = $pinecone_client->query($query_options);
 
-    //dpm($vector_results, 'Pinecone Query Results');
+    dpm($vector_results, 'Pinecone Query Results');
 
     if (empty($vector_results['matches'])) {
       backdrop_set_message(t('No relevant results found in Pinecone.'), 'warning');
@@ -247,7 +247,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   }
 
   // **Process Pinecone Results and Add to Messages**
-  $score_threshold = 0.80;
+  $score_threshold = 0.50;
   $document_links = [];
   $formatted_sources = [];
 
@@ -256,7 +256,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       continue;
     }
 
-    //dpm($match, '🔍 Processing Match');
+    dpm($match, '🔍 Processing Match');
 
     if (preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $matches)) {
       $datasource_id = $matches[1];

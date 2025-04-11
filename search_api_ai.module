@@ -1,4 +1,5 @@
 
+<?php
 
 /**
  * Implements hook_config_info().
@@ -165,15 +166,147 @@ function search_api_ai_menu() {
   );
 
   // Route for the embedding engine settings form.
-  $items['admin/config/search-api-ai/embedding-engine'] = array(
+  /*$items['admin/config/search-api-ai/embedding-engine'] = array(
     'title' => 'Embedding Engine Settings',
     'page callback' => 'backdrop_get_form',
     // Again, convert the Drupal form class to a Backdrop form function.
     'page arguments' => array('search_api_ai_embedding_engine_config_form'),
     'access arguments' => array('administer site configuration'),
-  );
+  );*/
 
   return $items;
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
+  if ($form_id == 'search_api_admin_index_edit' || $form_id == 'search_api_admin_add_index') {
+
+    // Add weights to existing form elements
+    $form['name']['#weight'] = 10;
+    $form['machine_name']['#weight'] = 20;
+    $form['item_type']['#weight'] = 30;
+    $form['datasource']['#weight'] = 40;
+    $form['enabled']['#weight'] = 50;
+    $form['description']['#weight'] = 60;
+    $form['server']['#weight'] = 70;
+    $form['read_only']['#weight'] = 90;
+    $form['options']['#weight'] = 100;
+    $form['submit']['#weight'] = 110;
+
+    // Load existing configuration
+    $config = config_get('search_api_ai.settings');
+
+    // Get the saved settings or default values
+    $settings = [];
+    if ($index) {
+      $settings = !empty($index->options['embedding_settings'])
+        ? $index->options['embedding_settings']
+        : [];
+    }
+
+    // Set default values from saved settings
+    $selected_engine = isset($settings['embeddings_engine'])
+      ? $settings['embeddings_engine']
+      : '';
+
+
+    // Load available embedding engines
+    $all_engines = module_invoke_all('embedding_engine_info');
+
+    // Filter valid embedding engines
+    $embedding_engines = array_filter($all_engines, function ($engine) {
+      return isset($engine['class'])
+        && class_exists($engine['class'])
+        && is_subclass_of($engine['class'], 'OpenAiEmbeddingsDefault');
+    });
+
+    // Build options array using model names
+    $options = [];
+    foreach ($embedding_engines as $id => $engine) {
+      $engine_class = $engine['class'];
+      if (class_exists($engine_class)) {
+        try {
+          $engine_instance = new $engine_class([], NULL);
+          $options[$id] = method_exists($engine_instance, 'getModelName')
+            ? $engine_instance->getModelName()
+            : $id;
+        }
+        catch (Exception $e) {
+          watchdog('search_api_ai', 'Error instantiating embedding engine @engine: @message', [
+            '@engine' => $id,
+            '@message' => $e->getMessage(),
+          ], WATCHDOG_ERROR);
+        }
+      }
+    }
+
+    // Get dimension value
+    $engine_config = $config['embeddings_engine_configuration'] ?? ['dimension' => 768];
+    $dimension_value = $engine_config['dimension'] ?? 768;
+
+    // Add the embedding engine selection with states
+    $form['embeddings_engine'] = [
+      '#type' => 'select',
+      '#title' => t('Embedding Engine'),
+      '#options' => $options,
+      '#default_value' => $selected_engine,
+      '#description' => t('Select the embedding engine to use. This needs to match the setting in the Vector database.'),
+      '#weight' => 75,
+      '#ajax' => [
+        'callback' => 'search_api_ai_update_embedding_dimension',
+        'wrapper' => 'embedding-dimension-wrapper',
+        'event' => 'change',
+      ],
+      '#states' => [
+        'visible' => [
+          'select[name="server"]' => [
+            ['value' => 'pinecone'],
+            ['value' => 'milvus'],
+          ],
+        ],
+      ],
+    ];
+
+    // Add the configuration fieldset with states
+    $form['embeddings_engine_configuration'] = [
+      '#type' => 'fieldset',
+      '#title' => t('Embedding Engine Configuration'),
+      '#prefix' => '<div id="embedding-dimension-wrapper">',
+      '#suffix' => '</div>',
+      '#weight' => 80,
+      '#states' => [
+        'visible' => [
+          'select[name="server"]' => [
+            ['value' => 'pinecone'],
+            ['value' => 'milvus'],
+          ],
+        ],
+      ],
+    ];
+
+    $form['embeddings_engine_configuration']['dimension'] = [
+      '#type' => 'textfield',
+      '#title' => t('Embedding Dimension'),
+      '#default_value' => $dimension_value,
+      '#description' => t('The number of dimensions for embeddings.'),
+    ];
+
+    // Add AJAX to the server selection
+    $form['server']['#ajax'] = [
+      'callback' => 'search_api_ai_server_selection_callback',
+      'wrapper' => 'edit-wrapper', // Ensure this matches your form wrapper ID
+      'method' => 'replace',
+    ];
+  }
+}
+
+/**
+ * AJAX callback for server selection.
+ */
+function search_api_ai_server_selection_callback($form, &$form_state) {
+  return $form;
 }
 
 /**
