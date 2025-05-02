@@ -1,5 +1,5 @@
-
 <?php
+
 
 /**
  * Implements hook_config_info().
@@ -108,7 +108,6 @@ function search_api_ai_convert_embedding($value, $original_type, $type, $field_n
   $api_key_name = $openai_config->get('api_key');
   $api_key = key_get_key_value($api_key_name);
   $openai_api = new OpenAIApi($api_key);
-
   // ✅ Generate embedding
   try {
     $vector = $openai_api->embedding($cleaned_text, $model);
@@ -124,7 +123,6 @@ function search_api_ai_convert_embedding($value, $original_type, $type, $field_n
       watchdog('search_api_ai', "❌ Invalid vector size for $field_name: Expected $expected_dimension, got " . count($vector), [], WATCHDOG_ERROR);
       return NULL;
     }
-
     return $vector;
 
   } catch (Exception $e) {
@@ -179,8 +177,7 @@ function search_api_ai_menu() {
 
 /**
  * Implements hook_form_alter().
- */
-function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
+ */function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
   if ($form_id == 'search_api_admin_index_edit' || $form_id == 'search_api_admin_add_index') {
 
     // Add weights to existing form elements
@@ -301,6 +298,7 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
     ];
   }
 }
+
 
 /**
  * AJAX callback for server selection.
@@ -535,11 +533,7 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     $search_api_ai_vectors = [];
   }
 
-  watchdog('search_api_ai', '🔄 Altering index items for @index', [
-    '@index' => $index->machine_name
-  ], WATCHDOG_NOTICE);
-
-  // ✅ Load Search API index configuration
+  // 🛑 Only run this hook if the index has an LLM vector embedding field.
   $query = db_select('search_api_index', 's')
     ->fields('s', ['options'])
     ->condition('machine_name', $index->machine_name)
@@ -547,18 +541,27 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     ->fetchField();
 
   if (!$query) {
-    watchdog('search_api_ai', "❌ Could not load index configuration.", [], WATCHDOG_ERROR);
     return;
   }
 
-  // ✅ Extract field settings from index options
-  $index_options = unserialize($query);
+  $index_options = @unserialize($query);
   if (empty($index_options['fields']) || !is_array($index_options['fields'])) {
-    watchdog('search_api_ai', "❌ No valid fields found in index configuration.", [], WATCHDOG_ERROR);
     return;
   }
 
-  // ✅ Identify fields that need embedding
+  $has_embedding = FALSE;
+  foreach ($index_options['fields'] as $field_info) {
+    if (!empty($field_info['real_type']) && $field_info['real_type'] === 'llm_vector_embedding') {
+      $has_embedding = TRUE;
+      break;
+    }
+  }
+
+  if (!$has_embedding) {
+    // 🛑 No vector fields — bail out immediately.
+    return;
+  }
+
   $embedding_fields = [];
   foreach ($index_options['fields'] as $field_name => $field_info) {
     if (!empty($field_info['real_type']) && $field_info['real_type'] === 'llm_vector_embedding') {
@@ -566,45 +569,87 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     }
   }
 
-  // ✅ Load configured embedding dimension from settings
-  $search_api_ai_config = config('search_api_ai.settings');
-  $expected_dimension = $search_api_ai_config->get('embeddings_engine_configuration')['dimension'] ?? 1536;
+  $expected_dimension = config('search_api_ai.settings')->get('embeddings_engine_configuration')['dimension'] ?? 1536;
 
-  watchdog('search_api_ai', "🛠 Using embedding dimension: @dimension", [
-    '@dimension' => $expected_dimension
-  ], WATCHDOG_DEBUG);
+  foreach ($items as $id => $item) {
+    $entity = NULL;
+    $entity_type = NULL;
+    $entity_id = NULL;
+    $entityId = NULL;
 
-  // Process each entity for embedding
-  foreach ($items as $id => &$entity) {
-    if (!is_object($entity)) {
-      continue;
+    // ✅ Preferred path: Search API gives us type + ID
+    if (isset($item->item_type) && isset($item->item_entity_id)) {
+      $entity_type = $item->item_type;
+      $entity_id = $item->item_entity_id;
+      $entity = entity_load($entity_type, $entity_id);
     }
-
-    // ✅ Correctly Extract nid['value']
-    $nid = isset($entity->nid) ? $entity->nid : NULL;
-
-    if (empty($nid)) {
-      watchdog('search_api_ai', '⚠️ Skipping entity @id due to missing nid. Raw nid: <pre>@nid</pre>', [
+    // ✅ Fallback: item is a loaded entity (rare in Backdrop)
+    elseif (is_object($item) && isset($item->nid)) {
+      $entity_type = 'node';
+      $entity_id = $item->nid;
+      $entity = $item;
+    }
+    elseif (is_object($item) && isset($item->tid)) {
+      $entity_type = 'taxonomy_term';
+      $entity_id = $item->tid;
+      $entity = $item;
+    }
+    elseif (is_object($item) && isset($item->item_id) && isset($item->bundle)) {
+      $entity_type = 'paragraphs_item';
+      $entity_id = $item->item_id;
+      $entity = entity_load('paragraphs_item', $entity_id);
+    }
+    else {
+      watchdog('search_api_ai', '⚠️ Unrecognized item structure for @id: <pre>@item</pre>', [
         '@id' => $id,
-        '@nid' => print_r($entity->nid, TRUE),
+        '@item' => print_r($item, TRUE),
       ], WATCHDOG_WARNING);
       continue;
     }
 
-    // ✅ Process each field independently
+    if (!$entity) {
+      watchdog('search_api_ai', '⚠️ Could not load entity: @type/@id', [
+        '@type' => $entity_type,
+        '@id' => $entity_id,
+      ], WATCHDOG_WARNING);
+      continue;
+    }
+
+    // Normalize entityId for later use.
+    switch ($entity_type) {
+      case 'taxonomy_term':
+        $entityId = $entity->tid;
+        break;
+      case 'paragraphs_item':
+        $entityId = $entity->item_id;
+        break;
+      case 'node':
+        $entityId = $entity->nid;
+        break;
+      default:
+        watchdog('search_api_ai', '⚠️ Unsupported entity type: @entity_type for entity: <pre>@entity</pre>', [
+          '@entity_type' => $entity_type,
+          '@entity' => print_r($entity, TRUE),
+        ], WATCHDOG_WARNING);
+        continue 2;
+    }
+
     $field_embeddings = [];
 
     foreach ($embedding_fields as $field_name) {
-      $real_field_name = ($field_name === 'body:value') ? 'body' : $field_name;
+      $parts = explode(':', $field_name);
+      $real_field_name = $parts[1] ?? $parts[0];
+      $subfield = $parts[2] ?? 'value';
+
       $field_texts = [];
 
       if (!empty($entity->{$real_field_name})) {
         if (is_array($entity->{$real_field_name})) {
-          foreach ($entity->{$real_field_name} as $lang => $values) {
+          foreach ($entity->{$real_field_name} as $langcode => $values) {
             if (is_array($values)) {
               foreach ($values as $delta => $value_data) {
-                if (!empty($value_data['value']) && is_string($value_data['value'])) {
-                  $cleaned_text = trim(strip_tags($value_data['value']));
+                if (!empty($value_data[$subfield]) && is_string($value_data[$subfield])) {
+                  $cleaned_text = trim(strip_tags($value_data[$subfield]));
                   if (!empty($cleaned_text)) {
                     $field_texts[] = $cleaned_text;
                   }
@@ -612,7 +657,7 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
               }
             }
           }
-        } else {
+        } elseif (is_string($entity->{$real_field_name})) {
           $cleaned_text = trim(strip_tags($entity->{$real_field_name}));
           if (!empty($cleaned_text)) {
             $field_texts[] = $cleaned_text;
@@ -621,17 +666,11 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       }
 
       foreach ($field_texts as $text) {
-        if (empty($text)) {
-          watchdog('search_api_ai', "⚠️ Skipping empty text for $real_field_name.", [], WATCHDOG_WARNING);
-          continue;
-        }
-
         $converted_value = search_api_ai_convert_embedding($text, 'string', 'llm_vector_embedding', $real_field_name);
 
         if (!empty($converted_value)) {
-          // ✅ Ensure the embedding has the correct size
           if (!is_array($converted_value) || count($converted_value) !== $expected_dimension) {
-            watchdog('search_api_ai', "❌ Invalid vector size for $real_field_name in item $nid: Expected $expected_dimension, got " . count($converted_value), [], WATCHDOG_ERROR);
+            watchdog('search_api_ai', "❌ Invalid vector size for $real_field_name in entity $entityId: Expected $expected_dimension, got " . count($converted_value), [], WATCHDOG_ERROR);
             continue;
           }
 
@@ -645,17 +684,17 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       }
     }
 
-    // ✅ Store embeddings in the global vector storage
     if (!empty($field_embeddings)) {
-      $search_api_ai_vectors[$nid] = [
-        'nid' => $nid,
+      $item_key = "{$entity_type}/{$entityId}";
+      $search_api_ai_vectors[$item_key] = [
+        'entityId' => $entityId,
         'vectors' => $field_embeddings,
       ];
 
-      watchdog('search_api_ai', '🛠 Final vectors stored for nid @nid: <pre>@vectors</pre>', [
-        '@nid' => $nid,
-        '@vectors' => print_r($search_api_ai_vectors[$nid], TRUE),
-      ], WATCHDOG_DEBUG);
+      watchdog('search_api_ai', '🛠 Final vectors stored for entity @entity: <pre>@vectors</pre>', [
+        '@entity' => $item_key,
+        '@vectors' => print_r($search_api_ai_vectors[$item_key], TRUE),
+      ], WATCHDOG_INFO);
     }
   }
 
@@ -663,3 +702,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     '@index' => $index->machine_name
   ], WATCHDOG_NOTICE);
 }
+
+
+

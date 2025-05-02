@@ -53,167 +53,261 @@ class PineconeService extends SearchApiAbstractService {
     $successful_item_ids = [];
     $batch_vectors = [];
 
-    watchdog('search_api_ai_pinecone', '📌 Function called: @function with @count items (Expected Dimension: @dimension)', [
-      '@function' => __METHOD__,
+    watchdog('search_api_ai_pinecone', '📌 indexItems() started for index @index with @count items. Expected dimension: @dim', [
+      '@index' => $index->machine_name,
       '@count' => count($items),
-      '@dimension' => $expected_dimension,
-    ], WATCHDOG_DEBUG);
+      '@dim' => $expected_dimension,
+    ], WATCHDOG_INFO);
 
-    if (empty($items)) {
-      watchdog('search_api_ai_pinecone', '❌ No items to index. Exiting.', [], WATCHDOG_WARNING);
-      return [];
-    }
+    foreach ($items as $id => $item) {
+      $entity = NULL;
+      $entity_type = NULL;
+      $entity_id = NULL;
 
-    foreach ($items as $item) {
-      if (is_array($item)) {
-        $item = (object) $item;
+      // ✅ Case 1: ID is like 'node/6'
+      if (is_string($id) && strpos($id, '/') !== FALSE) {
+        list($entity_type, $entity_id) = explode('/', $id, 2);
+        $entity = entity_load($entity_type, $entity_id);
       }
 
-      // ✅ Extract the item ID properly
-      $item_id = isset($item->nid['value']) ? (int) $item->nid['value'] : (isset($item->nid) ? (int) $item->nid : NULL);
-      if (empty($item_id)) {
-        watchdog('search_api_ai_pinecone', '⚠️ Skipping item due to missing item_id.', [], WATCHDOG_WARNING);
+      // ✅ Case 2: ID is numeric (e.g., 6) and $item is a field array
+      elseif (is_numeric($id) && is_array($item)) {
+        // Attempt to infer type from available fields (fragile, but works in many Backdrop cases)
+        if (isset($item['nid'])) {
+          $entity_type = 'node';
+          $entity_id = $id;
+          $entity = node_load($entity_id);
+        } elseif (isset($item['tid'])) {
+          $entity_type = 'taxonomy_term';
+          $entity_id = $id;
+          $entity = taxonomy_term_load($entity_id);
+        } elseif (isset($item['item_id'])) {
+          $entity_type = 'paragraphs_item';
+          $entity_id = $id;
+          $entity = entity_load('paragraphs_item', $entity_id);
+        } else {
+          watchdog('search_api_ai', '⚠️ Could not determine entity type for item with numeric ID: @id', [
+            '@id' => $id,
+          ], WATCHDOG_WARNING);
+          continue;
+        }
+      }
+
+      else {
+        watchdog('search_api_ai', '⚠️ Unexpected item format: <pre>@item</pre>', [
+          '@item' => print_r($item, TRUE),
+        ], WATCHDOG_WARNING);
         continue;
       }
 
-      // ✅ Iterate over all fields in `vectors` (title, body, etc.)
-      foreach ($search_api_ai_vectors[$item_id]['vectors'] as $field_name => $vector_entries) {
+      if (!$entity) {
+        watchdog('search_api_ai', '⚠️ Failed to load entity: @type/@id', [
+          '@type' => $entity_type,
+          '@id' => $entity_id,
+        ], WATCHDOG_WARNING);
+        continue;
+      }
 
-        if (!isset($vector_entries['vectors']) || !is_array($vector_entries['vectors'])) {
-          watchdog('search_api_ai_pinecone', "❌ Missing or invalid vectors for field $field_name in item $item_id.", [], WATCHDOG_ERROR);
+      [$entity_type, $entity_id_str] = explode('/', $id, 2);
+      $item_key = "{$entity_type}/{$entity_id_str}";
+
+      if (
+        empty($search_api_ai_vectors[$item_key]) ||
+        empty($search_api_ai_vectors[$item_key]['vectors']) ||
+        !is_array($search_api_ai_vectors[$item_key]['vectors'])
+      ) {
+        watchdog('search_api_ai_pinecone', '⚠️ No vectors found for entity @key. Marking as indexed anyway.', ['@key' => $item_key], WATCHDOG_INFO);
+
+        // Mark the item as successfully handled to avoid index mismatch.
+        $successful_item_ids[] = $item_key;
+        continue;
+      }
+
+      foreach ($search_api_ai_vectors[$item_key]['vectors'] as $field_name => $vector_entry) {
+        $vector_data = $vector_entry['vectors'] ?? NULL;
+
+        // Log vector info
+        watchdog('search_api_ai_pinecone', '🧪 Field @field for @key: count = @count', [
+          '@field' => $field_name,
+          '@key' => $item_key,
+          '@count' => is_array($vector_data) ? count($vector_data) : 'not an array',
+        ], WATCHDOG_DEBUG);
+
+        if (
+          !is_array($vector_data) ||
+          count($vector_data) !== $expected_dimension
+        ) {
+          watchdog('search_api_ai_pinecone', '❌ Invalid or missing vector for @field in @key.', [
+            '@field' => $field_name,
+            '@key' => $item_key,
+          ], WATCHDOG_ERROR);
           continue;
         }
 
-        $vectors = $vector_entries['vectors'];
+        $content_text = isset($vector_entry['content']) && is_string($vector_entry['content'])
+          ? strip_tags($vector_entry['content'])
+          : '';
 
-        if (count($vectors) !== $expected_dimension) {
-          watchdog('search_api_ai_pinecone', "❌ Invalid vector size for field $field_name in item $item_id: Expected $expected_dimension, got " . count($vectors), [], WATCHDOG_ERROR);
-          continue;
-        }
-
-        // ✅ Extract text content for metadata
-        $content_text = "";
-        if (isset($vector_entries['content']) && is_string($vector_entries['content'])) {
-          $content_text = strip_tags($vector_entries['content']);
-        }
-
-        $pinecone_id = "entity:node/{$item_id}:en:{$field_name}:0";
+        $pinecone_id = "entity:{$entity_type}/{$entity_id_str}:en:{$field_name}:0";
 
         $batch_vectors[] = [
           'id' => $pinecone_id,
-          'values' => array_values(array_map('floatval', $vectors)),
-          'metadata' => ['content' => $content_text],
+          'values' => array_map('floatval', $vector_data),
+          'metadata' => [
+            'content' => $content_text,
+          ],
         ];
       }
-
-      $successful_item_ids[] = $item_id;
+      $successful_item_ids[] = $item_key;
     }
 
-    // ✅ Send all vectors in one batch request
     if (!empty($batch_vectors)) {
+      watchdog('search_api_ai_pinecone', '📤 Sending @count vectors to Pinecone (namespace: @ns)', [
+        '@count' => count($batch_vectors),
+        '@ns' => $namespace,
+      ], WATCHDOG_INFO);
+
       try {
         $this->client->upsert([
           'vectors' => $batch_vectors,
           'namespace' => $namespace,
         ]);
-
-        watchdog('search_api_ai_pinecone', '🚀 Successfully indexed @count vectors.', [
-          '@count' => count($batch_vectors),
-        ], WATCHDOG_NOTICE);
+        watchdog('search_api_ai_pinecone', '✅ Upsert completed successfully.', [], WATCHDOG_INFO);
       } catch (\Exception $e) {
-        watchdog('search_api_ai_pinecone', '❌ Pinecone indexing error: @message', [
-          '@message' => $e->getMessage(),
-        ], WATCHDOG_ERROR);
+        watchdog('search_api_ai_pinecone', '❌ Upsert failed: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
       }
     } else {
-      watchdog('search_api_ai_pinecone', '⚠️ No valid vectors to index.', [], WATCHDOG_WARNING);
+      watchdog('search_api_ai_pinecone', '⚠️ No valid vectors to send to Pinecone.', [], WATCHDOG_WARNING);
     }
 
     return $successful_item_ids;
   }
 
+
   /**
    * Performs a search in Pinecone.
    */
   public function search(SearchApiQueryInterface $query) {
-
     global $search_api_ai_is_indexing;
 
     if (!empty($search_api_ai_is_indexing)) {
       watchdog('search_api_ai_pinecone', '🚫 search() was called during indexing. Aborting.', [], WATCHDOG_WARNING);
-      return [];
+      return [
+        'result count' => 0,
+        'results' => [],
+      ];
     }
 
-    watchdog('search_api_ai_pinecone', '🔍 search() method called.');
-
     $index = $query->getIndex();
-
     $query_embedding = $query->getOption('query_embedding');
 
     if (empty($query_embedding)) {
-      watchdog('search_api_ai_pinecone', '⚠️ Query embedding missing! Attempting to regenerate.', [], WATCHDOG_WARNING);
+      watchdog('search_api_ai_pinecone', '⚠️ No query embedding provided — regenerating from keywords.', [], WATCHDOG_DEBUG);
 
-      // Extract search text (keywords) from the query
       $search_text = $query->getKeys();
+      unset($search_text['#conjunction']);
+      $flat_text = is_array($search_text) ? implode(' ', $search_text) : (string) $search_text;
 
-      if (!empty($search_text)) {
-        // Generate embedding using OpenAI or another embedding function
-        $query_embedding = openai_generate_embedding($search_text);  // You need to implement this function
+      if (!empty($flat_text)) {
+        $query_embedding = $this->openai_generate_embedding($flat_text);
 
-        watchdog('search_api_ai_pinecone', '🛠️ Generated embedding: <pre>@embedding</pre>', [
-          '@embedding' => json_encode(array_slice($query_embedding, 0, 5)) . '...',
-        ], WATCHDOG_NOTICE);
-      } else {
-        watchdog('search_api_ai_pinecone', '🚨 Cannot generate embedding: No search text found.', [], WATCHDOG_ERROR);
-        return [];
+        if (!empty($query_embedding) && is_array($query_embedding)) {
+          watchdog('search_api_ai_pinecone', '✅ Successfully generated embedding from search text.', [], WATCHDOG_NOTICE);
+        }
+        else {
+          watchdog('search_api_ai_pinecone', '❌ Embedding generation failed or returned invalid result.', [], WATCHDOG_ERROR);
+          return [
+            'result count' => 0,
+            'results' => [],
+          ];
+        }
+      }
+      else {
+        watchdog('search_api_ai_pinecone', '🚫 Search text is empty, cannot generate embedding.', [], WATCHDOG_ERROR);
+        return [
+          'result count' => 0,
+          'results' => [],
+        ];
       }
     }
-
-    // Log the query embedding
-    watchdog('search_api_ai_pinecone', '🔍 Query Embedding: @embedding', [
-      '@embedding' => json_encode(array_slice($query_embedding ?? [], 0, 5)) . '...',
-    ], WATCHDOG_NOTICE);
-
-    if (empty($query_embedding) || !is_array($query_embedding)) {
-      watchdog('search_api_ai_pinecone', '⚠️ No valid query_embedding found! Aborting search.', [], WATCHDOG_WARNING);
-      return [];
-    }
-
-    // Construct Pinecone query parameters
-    $query_parameters = [
-      'vector' => $query_embedding,
-      'top_k' => $query->getOption('top_k') ?? 5,
-      'include_metadata' => $query->getOption('include_metadata') ?? true,
-      'include_values' => true,
-      'filter' => $query->getOption('filters') ?? [],
-      'namespace' => $this->getNamespace($index),
-    ];
-    //dpm($query_parameters);
-
-    watchdog('search_api_ai_pinecone', '🔍 Pinecone Query Parameters: <pre>@query</pre>', [
-      '@query' => print_r($query_parameters, TRUE),
-    ], WATCHDOG_NOTICE);
 
     try {
-      $response = $this->client->query($query_parameters);
+      $response = $this->client->query([
+        'vector' => $query_embedding,
+        'top_k' => $query->getOption('top_k') ?? 5,
+        'include_metadata' => true,
+        'include_values' => true,
+        'filter' => $query->getOption('filters') ?? [],
+        'namespace' => $this->getNamespace($index),
+      ]);
 
-      if (!is_object($response) || !method_exists($response, 'getBody')) {
-        watchdog('search_api_ai_pinecone', '❌ Invalid response from Pinecone', [], WATCHDOG_ERROR);
-        return [];
+      $matches = is_array($response) && isset($response['matches']) ? $response['matches'] : [];
+      dpm($matches, 'matches');
+      $results = [];
+
+      foreach ($matches as $match) {
+        if (preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $m)) {
+          $entity_type = $m[1];
+          $entity_id = $m[2];
+          $item_id = "{$entity_type}/{$entity_id}";
+
+          $results[$item_id] = [
+            'item_id' => $item_id,
+            'score' => $match['score'],
+            'fields' => [],
+            'extra_data' => [
+              'metadata' => $match['metadata'] ?? [],
+            ],
+          ];
+        }
       }
 
-      $decoded_response = json_decode($response->getBody()->getContents(), true);
-      if (empty($decoded_response) || !isset($decoded_response['matches'])) {
-        watchdog('search_api_ai_pinecone', '❌ Pinecone returned an empty or invalid response.', [], WATCHDOG_ERROR);
-        return [];
+      return [
+        'result count' => count($results),
+        'results' => $results,
+      ];
+    }
+    catch (\Exception $e) {
+      watchdog('search_api_ai_pinecone', '❌ Pinecone query error: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
+      return [
+        'result count' => 0,
+        'results' => [],
+      ];
+    }
+  }
+
+  /**
+   * Generates embeddings using OpenAI API.
+   *
+   * @param string $text
+   *   The text to generate embeddings for.
+   *
+   * @return array|null
+   *   Returns the embedding vector array or null if generation fails.
+   */
+  protected function openai_generate_embedding($text) {
+    try {
+      $openai_api_key_name = config_get('openai.settings', 'api_key');
+      $api_key = key_get_key_value($openai_api_key_name);
+      if (empty($api_key)) {
+        watchdog('openai_embeddings', 'Missing OpenAI API key', [], WATCHDOG_ERROR);
+        return NULL;
       }
 
-      return ['result count' => count($decoded_response['matches']), 'matches' => $decoded_response['matches']];
-    } catch (\Exception $e) {
-      watchdog('search_api_ai_pinecone', '❌ Pinecone query error: @message', [
-        '@message' => $e->getMessage(),
+      $model = config_get('search_api_ai.settings', 'model') ?: 'text-embedding-3-small';
+
+      $openai = new OpenAIApi($api_key);
+
+      // ✅ Ensure $text is a string
+      $text = is_array($text) ? implode(' ', $text) : (string) $text;
+
+      return $openai->embedding($text, $model);
+    }
+    catch (\Exception $e) {
+      watchdog('openai_embeddings', 'Error generating embedding: @message', [
+        '@message' => $e->getMessage()
       ], WATCHDOG_ERROR);
-      return [];
+      return NULL;
     }
   }
 
@@ -323,7 +417,7 @@ class PineconeService extends SearchApiAbstractService {
   }
 
 
-   /**
+  /**
    * Extracts metadata from Pinecone search results.
    */
   public function extractMetadata($result_row, $item) {

@@ -27,7 +27,8 @@ function search_api_ai_pinecone_search_api_service_info() {
       'name' => t('Pinecone'),
       'description' => t('Pinecone backend for Search API AI.'),
       'class' => 'PineconeService',
-      'file' => 'includes/service.inc', // Ensure Backdrop loads the file
+      'file' => 'includes/service.inc', // Ensure Backdrop loads the
+      // file
     ],
   ];
 }

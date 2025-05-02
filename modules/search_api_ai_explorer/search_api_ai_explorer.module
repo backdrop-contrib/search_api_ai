@@ -190,7 +190,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
 
   // Load models from configuration.
   $embedding_model = config_get('search_api_ai.settings', 'model') ?: 'text-embedding-3-small';
-  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4';
+  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4o-mini';
 
   dpm($embedding_model, '✅ Using OpenAI Embedding Model');
   dpm($chat_model, '✅ Using OpenAI Chat Model');
@@ -205,9 +205,14 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   $messages = [
     [
       'role' => 'system',
-      'content' => "You are a chatbot that ONLY provides answers using the provided sources.
-                    Do NOT include external information.
-                    Summarize only from these sources and explicitly reference them.",
+      'content' => "You are an AI Agent embedded in a Drupal website.
+                    Your job is to answer user questions using a local vector database through the RAG tool.
+                    You must only use content from this site — external sources are not allowed.
+                    Do not fabricate or guess any information or links.
+                    When a user submits a query:
+                    Search the vector database for up to 5 relevant nodes, unless the question is unusually complex.
+                    Use only the retrieved content to generate your answer.
+                    Limit your response to 2 sentences if possible.",
     ],
   ];
 
@@ -262,13 +267,9 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       $datasource_id = $matches[1];
       $item_id = $matches[2];
 
-      //dpm($datasource_id, '✅ Extracted Datasource ID');
-      //dpm($item_id, '✅ Extracted Item ID');
-
-      // Load entity safely
       $entity = entity_load($datasource_id, $item_id);
 
-      if (!$entity || empty($entity->nid)) {
+      if (!$entity) {
         backdrop_set_message(t('⚠️ Could not load entity: @datasource/@item_id', [
           '@datasource' => $datasource_id,
           '@item_id' => $item_id,
@@ -276,20 +277,56 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
         continue;
       }
 
-      $title = check_plain($entity->label());
-      $url = url("node/{$entity->nid}");
+      $title = '';
+      $url = '';
       $snippet = !empty($match['metadata']['content']) ? check_plain(substr($match['metadata']['content'], 0, 500)) : '';
 
-      //($title, '✅ Extracted Title');
+      // 🔗 Handle paragraphs → parent node
+      if ($datasource_id === 'paragraphs_item') {
+        // Try to find a parent node referencing this paragraph ID.
+        $query = db_select('field_data_field_paragraphs', 'f')
+          ->fields('f', ['entity_id'])
+          ->condition('f.field_paragraphs_value', $item_id)
+          ->range(0, 1);
+        $nid = $query->execute()->fetchField();
 
-      //dpm($title, 'Extracted Title');
-      //dpm($url, 'Extracted Url');
-      //dpm($snippet, 'Extracted Snippet');
+        if ($nid) {
+          $node = node_load($nid);
+          if ($node) {
+            $title = check_plain($node->title);
+            $url = url($node->uri()['path']);
+          }
+          else {
+            backdrop_set_message(t('⚠️ Node @nid could not be loaded for paragraph ID @pid.', [
+              '@nid' => $nid,
+              '@pid' => $item_id,
+            ]), 'warning');
+            continue;
+          }
+        }
+        else {
+          backdrop_set_message(t('⚠️ Could not find parent node for paragraph ID @id.', ['@id' => $item_id]), 'warning');
+          continue;
+        }
+      }
 
-      // **Store sources in correct format**
+      // 🔗 Handle taxonomy terms
+      elseif ($datasource_id === 'taxonomy_term') {
+        $title = check_plain($entity->name);
+        $url = url($entity->uri()['path']);
+      }
+
+      // 🔗 Default: node or other entity
+      else {
+        $uri = $entity->uri();
+        $title = check_plain(method_exists($entity, 'label') ? $entity->label() : t('Untitled'));
+        $url = url($uri['path']);
+      }
+
       $formatted_sources[] = "<a href='$url'>$title</a>: $snippet";
       $document_links[] = "<a href='$url'>$title</a>";
-    } else {
+    }
+    else {
       backdrop_set_message(t('⚠️ Invalid match ID format: @id', ['@id' => $match['id'] ?? 'N/A']), 'warning');
     }
   }
@@ -299,11 +336,10 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   // **Store User Input**
   $messages[] = ['role' => 'user', 'content' => $query_text];
   // ✅ Step 1: Add initial system message
-  // ✅ Step 1: Add initial system message
   $messages = [
     [
       'role' => 'system',
-      'content' => 'You are a chatbot to help find documents and provide links and references.',
+      'content' => "You are a chatbot that answers questions strictly based on provided source text. Do not include any outside knowledge. If the source does not answer the question, say so.",
     ],
   ];
 
@@ -321,9 +357,13 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
         // Convert absolute URLs to relative URLs
         $url = preg_replace('/https?:\/\/[^\/]+(\/[^\'"]+)/', '$1', $url);
 
+        $combined_context = implode("\n\n", array_map(function ($source) {
+          return strip_tags($source); // Strip all tags to avoid distraction
+        }, $formatted_sources));
+
         $messages[] = [
-          'role' => 'system',
-          'content' => "Source: <a href='$url'>$title</a>\nSnippet: " . trim($snippet),
+          'role' => 'user',
+          'content' => "Here is relevant source content:\n\n$combined_context\n\nUsing only the information above, answer the question: $query_text",
         ];
       }
     }
