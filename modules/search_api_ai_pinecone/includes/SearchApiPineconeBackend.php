@@ -7,7 +7,6 @@
 class SearchApiAiPineconeBackend extends SearchApiBackend {
 
   protected $client;
-
   public function __construct($server, $options = []) {
     parent::__construct($server, $options);
     $plugin_id = config_get('openai_embeddings.settings', 'vector_client_plugin');

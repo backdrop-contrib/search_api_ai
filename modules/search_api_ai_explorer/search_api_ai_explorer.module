@@ -23,13 +23,15 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
   $form['index'] = [
     '#type' => 'select',
     '#title' => t('Index'),
-    '#description' => t('Select the Pinecone index for the embeddings store.'),
+    '#description' => t('Select the index for the embeddings store.'),
     '#options' => [],
   ];
 
   // Load all indexes and servers at once.
   $indexes = entity_load_multiple('search_api_index');
+  //dpm($indexes, 'Indexes');
   $servers = entity_load_multiple('search_api_server');
+  //dpm($servers, 'Servers');
 
   foreach ($indexes as $index) {
     if (empty($index->server)) {
@@ -45,8 +47,8 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
       }
     }
 
-    // Ensure the server exists and is Pinecone.
-    if ($server && isset($server->class) && $server->class == 'pinecone_service') {
+    // Ensure the server exists and is Pinecone or Milvus.
+    if ($server && isset($server->class) && $server->class == 'pinecone_service' || $server->class == 'milvus') {
       $form['index']['#options'][$index->machine_name] = $index->name;
     }
   }
@@ -71,7 +73,7 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
       $filtered_messages[] = $msg; // Always include assistant messages
     }
   }
-
+  $document_links = [];
   $form['messages'] = [
     '#type' => 'markup',
     '#markup' => '<div>' . implode('<br>', array_map(function ($msg) use ($document_links) {
@@ -118,18 +120,121 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
   return $form;
 }
 
-
-
 /**
- * Form submission handler for search_api_ai_explorer_search_form().
+ * Extract matches and normalized metadata from any backend.
  */
+function search_api_ai_extract_contextual_sources($backend_class, $vector_results, $score_threshold = 0.50) {
+  $sources = [];
+  $matches = [];
+
+  // Pinecone: has 'matches' key. Milvus: direct array.
+  if ($backend_class === 'pinecone_service' && isset($vector_results['matches'])) {
+    $matches = $vector_results['matches'];
+  }
+  elseif ($backend_class === 'milvus' && is_array($vector_results) && !isset($vector_results['matches'])) {
+    $matches = $vector_results;
+  }
+
+  foreach ($matches as $match) {
+    // Use whichever exists, or null if neither.
+    $score = isset($match['score']) ? $match['score'] :
+      (isset($match['distance']) ? $match['distance'] : null);
+
+    // Skip if no score/distance present, or below threshold.
+    if ($score === null || $score < $score_threshold) {
+      continue;
+    }
+
+  // Metadata: Milvus uses top-level, Pinecone nests.
+    $metadata = isset($match['metadata']) ? $match['metadata'] : $match;
+
+    // Entity extraction
+    $datasource_id = '';
+    $item_id = '';
+    if (!empty($metadata['backdrop_entity_id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $metadata['backdrop_entity_id'], $m)) {
+      $datasource_id = $m[1];
+      $item_id = $m[2];
+    } elseif (!empty($match['id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $m)) {
+      $datasource_id = $m[1];
+      $item_id = $m[2];
+    } else {
+      $datasource_id = !empty($metadata['entity_type']) ? $metadata['entity_type'] : 'node';
+      $item_id = !empty($metadata['nid']) ? $metadata['nid'] : (!empty($metadata['tid']) ? $metadata['tid'] : '');
+    }
+    if (!$datasource_id || !$item_id) {
+      continue;
+    }
+
+    $entity = entity_load($datasource_id, $item_id);
+    if (!$entity) {
+      $sources[] = [
+        'error' => t('⚠️ Could not load entity: @datasource/@item_id', [
+          '@datasource' => $datasource_id,
+          '@item_id' => $item_id,
+        ]),
+      ];
+      continue;
+    }
+
+    // Title and snippet
+    $title = method_exists($entity, 'label') ? check_plain($entity->label()) :
+      (!empty($entity->title) ? check_plain($entity->title) : t('Untitled'));
+    $uri = $entity->uri();
+    $url = url($uri['path']);
+    $snippet = !empty($metadata['content']) ? check_plain(substr($metadata['content'], 0, 500)) : '';
+
+    // Paragraph parent lookup (optional)
+    if ($datasource_id === 'paragraphs_item') {
+      $query = db_select('field_data_field_paragraphs', 'f')
+        ->fields('f', ['entity_id'])
+        ->condition('f.field_paragraphs_value', $item_id)
+        ->range(0, 1);
+      $nid = $query->execute()->fetchField();
+      if ($nid) {
+        $node = node_load($nid);
+        if ($node) {
+          $title = check_plain($node->title);
+          $url = url($node->uri()['path']);
+        } else {
+          $sources[] = [
+            'error' => t('⚠️ Node @nid could not be loaded for paragraph ID @pid.', [
+              '@nid' => $nid,
+              '@pid' => $item_id,
+            ]),
+          ];
+          continue;
+        }
+      } else {
+        $sources[] = [
+          'error' => t('⚠️ Could not find parent node for paragraph ID @id.', ['@id' => $item_id]),
+        ];
+        continue;
+      }
+    }
+    elseif ($datasource_id === 'taxonomy_term') {
+      $title = check_plain($entity->name);
+      $url = url($entity->uri()['path']);
+    }
+
+    $sources[] = [
+      'datasource_id' => $datasource_id,
+      'item_id' => $item_id,
+      'entity' => $entity,
+      'title' => $title,
+      'url' => $url,
+      'snippet' => $snippet,
+      // You may want to include the raw score/distance for debugging:
+      'score' => $backend_class === 'pinecone_service' ? $match['score'] : $match['distance'],
+    ];
+  }
+  return $sources;
+}
+
+
 function search_api_ai_explorer_search_form_submit($form, &$form_state) {
-  // Retrieve the index ID and user query.
   $index_id = $form_state['values']['index'];
   $query_text = trim($form_state['values']['query']);
-
-  //dpm($index_id, 'Index ID before loading');
-
+  dpm($query_text, 'Query Text');
   // Load the selected index.
   $indexes = entity_load_multiple('search_api_index');
   $index = NULL;
@@ -139,7 +244,6 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       break;
     }
   }
-
   if (!$index || !is_object($index)) {
     backdrop_set_message(t('Invalid index selected.'), 'error');
     return;
@@ -154,26 +258,8 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       break;
     }
   }
-
   if (!$server) {
     backdrop_set_message(t('The selected index does not have a valid server.'), 'error');
-    return;
-  }
-
-  // Instantiate PineconeService.
-  $pinecone_service = new PineconeService($server);
-  if (!$index instanceof SearchApiIndex) {
-    backdrop_set_message(t('Invalid index instance for namespace retrieval.'), 'error');
-    return;
-  }
-
-  $namespace = trim($pinecone_service->getNamespace($index));
-  if (strpos($namespace, ':') === 0) {
-    $namespace = substr($namespace, 1);
-  }
-
-  if (!$namespace) {
-    backdrop_set_message(t('Failed to retrieve namespace for Pinecone.'), 'error');
     return;
   }
 
@@ -190,26 +276,12 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
 
   // Load models from configuration.
   $embedding_model = config_get('search_api_ai.settings', 'model') ?: 'text-embedding-3-small';
-  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4';
-
-  dpm($embedding_model, '✅ Using OpenAI Embedding Model');
-  dpm($chat_model, '✅ Using OpenAI Chat Model');
-
+  dpm($embedding_model, 'Embedding Model');
+  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4o-mini';
   if (!is_string($chat_model)) {
     backdrop_set_message(t('⚠️ Chat model is not a valid string! Using default GPT-4.'), 'warning');
-    //dpm($chat_model, '❌ ERROR: Chat model is not a string!');
     $chat_model = 'gpt-4';
   }
-
-  // **Initialize AI Messages**
-  $messages = [
-    [
-      'role' => 'system',
-      'content' => "You are a chatbot that ONLY provides answers using the provided sources.
-                    Do NOT include external information.
-                    Summarize only from these sources and explicitly reference them.",
-    ],
-  ];
 
   // **Generate Embeddings**
   try {
@@ -222,183 +294,164 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     backdrop_set_message(t('Error generating embeddings: @error', ['@error' => $e->getMessage()]), 'error');
     return;
   }
+  dpm($embedding_vector, 'Embedding Vector');
+  // --- Determine backend and perform vector search ---
+  $vector_results = [];
+  $backend_class = $server->class;
 
-  // **Query Pinecone for Matches**
-  try {
+  if ($backend_class === 'pinecone') {
+    $pinecone_service = new PineconeService($server);
+    $namespace = trim($pinecone_service->getNamespace($index));
+    if (strpos($namespace, ':') === 0) {
+      $namespace = substr($namespace, 1);
+    }
+    if (!$namespace) {
+      backdrop_set_message(t('Failed to retrieve namespace for Pinecone.'), 'error');
+      return;
+    }
     $query_options = [
       'vector' => $embedding_vector,
       'top_k' => 8,
       'namespace' => $namespace,
       'include_metadata' => TRUE,
     ];
-
-    $pinecone_client = new PineconeVectorClient();
-    $vector_results = $pinecone_client->query($query_options);
-
-    dpm($vector_results, 'Pinecone Query Results');
-
-    if (empty($vector_results['matches'])) {
-      backdrop_set_message(t('No relevant results found in Pinecone.'), 'warning');
+    $client = new PineconeVectorClient();
+    try {
+      $vector_results = $client->query($query_options);
+      if (empty($vector_results['matches'])) {
+        backdrop_set_message(t('No relevant results found in Pinecone.'), 'warning');
+        return;
+      }
+    } catch (Exception $e) {
+      backdrop_set_message(t('Error querying Pinecone: @error', ['@error' => $e->getMessage()]), 'error');
       return;
     }
-  } catch (Exception $e) {
-    backdrop_set_message(t('Error querying Pinecone: @error', ['@error' => $e->getMessage()]), 'error');
+  }
+  elseif ($backend_class === 'milvus') {
+    $milvus_service = new MilvusService($server);
+    $collection = $milvus_service->getCollection($index);
+    if (!$collection) {
+      backdrop_set_message(t('Failed to retrieve collection for Milvus.'), 'error');
+      return;
+    }
+    $database = isset($server->options['database']) ? $server->options['database'] : 'default';
+    $query_options = [
+      'vector' => $embedding_vector,
+      'top_k' => 8,
+      'collection' => $collection,
+      'database' => $database,
+      'output_fields' => [
+        'content',
+        'nid',
+        'title',
+        'backdrop_entity_id',
+        'backdrop_long_id',
+        'field_name',
+        'server_id',
+        'index_id'
+      ],
+    ];
+    $milvus_settings = config_get('openai_embeddings.settings');
+    $client = new MilvusVectorClient($milvus_settings);
+    if (!$client) {
+      backdrop_set_message(t('Milvus client is not initialized.'), 'error');
+      return;
+    }
+    try {
+      $vector_results = $client->query($query_options);
+      dpm($vector_results, 'Milvus Results');
+      if (empty($vector_results)) {
+        backdrop_set_message(t('No relevant results found in Milvus.'), 'warning');
+        return;
+      }
+    } catch (Exception $e) {
+      backdrop_set_message(t('Error querying Milvus: @error', ['@error' => $e->getMessage()]), 'error');
+      return;
+    }
+  }
+  else {
+    backdrop_set_message(t('This backend is not supported for vector search.'), 'error');
     return;
   }
 
-  // **Process Pinecone Results and Add to Messages**
-  $score_threshold = 0.50;
+  // --- Process Results and Add to Messages ---
+  $score_threshold = 0.30;
+  $sources = search_api_ai_extract_contextual_sources($backend_class, $vector_results, $score_threshold);
   $document_links = [];
   $formatted_sources = [];
-
-  foreach ($vector_results['matches'] as $match) {
-    if ($match['score'] < $score_threshold) {
+  foreach ($sources as $src) {
+    if (!empty($src['error'])) {
+      backdrop_set_message($src['error'], 'warning');
       continue;
     }
-
-    dpm($match, '🔍 Processing Match');
-
-    if (preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $matches)) {
-      $datasource_id = $matches[1];
-      $item_id = $matches[2];
-
-      //dpm($datasource_id, '✅ Extracted Datasource ID');
-      //dpm($item_id, '✅ Extracted Item ID');
-
-      // Load entity safely
-      $entity = entity_load($datasource_id, $item_id);
-
-      if (!$entity || empty($entity->nid)) {
-        backdrop_set_message(t('⚠️ Could not load entity: @datasource/@item_id', [
-          '@datasource' => $datasource_id,
-          '@item_id' => $item_id,
-        ]), 'warning');
-        continue;
-      }
-
-      $title = check_plain($entity->label());
-      $url = url("node/{$entity->nid}");
-      $snippet = !empty($match['metadata']['content']) ? check_plain(substr($match['metadata']['content'], 0, 500)) : '';
-
-      //($title, '✅ Extracted Title');
-
-      //dpm($title, 'Extracted Title');
-      //dpm($url, 'Extracted Url');
-      //dpm($snippet, 'Extracted Snippet');
-
-      // **Store sources in correct format**
-      $formatted_sources[] = "<a href='$url'>$title</a>: $snippet";
-      $document_links[] = "<a href='$url'>$title</a>";
-    } else {
-      backdrop_set_message(t('⚠️ Invalid match ID format: @id', ['@id' => $match['id'] ?? 'N/A']), 'warning');
-    }
+    $formatted_sources[] = "<a href='{$src['url']}'>{$src['title']}</a>: {$src['snippet']}";
+    $document_links[] = "<a href='{$src['url']}'>{$src['title']}</a>";
   }
 
-  //dpm($formatted_sources, 'Formatted Sources');
-
-  // **Store User Input**
+  // Compose chat prompt and finish as before...
   $messages[] = ['role' => 'user', 'content' => $query_text];
-  // ✅ Step 1: Add initial system message
-  // ✅ Step 1: Add initial system message
+  // Initialize AI Messages (only once!)
   $messages = [
     [
       'role' => 'system',
-      'content' => 'You are a chatbot to help find documents and provide links and references.',
+      'content' => "You are an AI Agent embedded in a Backdrop CMS website.
+                  Your job is to answer user questions using a local vector database through the RAG tool.
+                  You must only use content from this site — external sources are not allowed.
+                  Do not fabricate or guess any information or links.
+                  When a user submits a query:
+                  Search the vector database for up to 5 relevant nodes, unless the question is unusually complex.
+                  Use only the retrieved content to generate your answer.
+                  Limit your response to 5 sentences or less if possible.",
     ],
   ];
 
-  // ✅ Step 2: Add sources in multi-line format
+  // Add the user/context message (do NOT overwrite $messages!)
   if (!empty($formatted_sources)) {
-    foreach ($formatted_sources as $source) {
-      // Extract title and snippet separately
-      preg_match("/<a href='([^']+)'>([^<]+)<\/a>: (.+)/", $source, $matches);
-
-      if (count($matches) === 4) {
-        $url = $matches[1];  // Extracted URL
-        $title = $matches[2]; // Extracted Title
-        $snippet = $matches[3]; // Extracted Snippet
-
-        // Convert absolute URLs to relative URLs
-        $url = preg_replace('/https?:\/\/[^\/]+(\/[^\'"]+)/', '$1', $url);
-
-        $messages[] = [
-          'role' => 'system',
-          'content' => "Source: <a href='$url'>$title</a>\nSnippet: " . trim($snippet),
-        ];
-      }
-    }
+    $combined_context = implode("\n\n", array_map('strip_tags', $formatted_sources));
+    $messages[] = [
+      'role' => 'user',
+      'content' => "Here is relevant source content:\n\n$combined_context\n\nUsing only the information above, answer the question: $query_text",
+    ];
+  } else {
+    $messages[] = [
+      'role' => 'user',
+      'content' => $query_text,
+    ];
   }
 
-  // ✅ Step 3: Add user query
-  $messages[] = [
-    'role' => 'user',
-    'content' => $query_text,
-  ];
 
   // **Call OpenAI Chat Model**
   try {
-    //dpm($chat_model, '🛠 Chat Model Before OpenAI Chat API Call');
-    //dpm($messages, '🛠 Messages Before OpenAI Chat API Call');
-
     $ai_response = $openai->chat($chat_model, $messages, 0.4, 1024);
-    //dpm($ai_response, '✅ OpenAI Chat Response');
-
-    // **Ensure response is correctly formatted**
     if (!empty($ai_response)) {
       $ai_response_text = trim($ai_response);
     } else {
-      //dpm($ai_response, '❌ OpenAI Response was empty or malformed');
       $ai_response_text = 'No response provided.';
     }
-
-    //dpm($ai_response_text, '🔍 Extracted AI Response Text BEFORE Storing');
-
-    // 🛠 Remove inline links before storing
     $ai_response_text = preg_replace('/<a href=[^>]+>([^<]+)<\/a>/', '$1', $ai_response_text);
-
-    // **🛠 Fix: Remove duplicate links**
     $document_links = array_unique($document_links);
-
-    // **🔧 Append Related Articles to the Response**
     if (!empty($document_links)) {
       $ai_response_text .= "<br><br><strong>For more detailed information, you can refer to this content:</strong><ol>";
-
       foreach ($document_links as $link) {
         $ai_response_text .= "<li>$link</li>";
       }
-
       $ai_response_text .= "</ol>";
     }
-
-    //dpm($ai_response_text, '📝 Final AI Response Text BEFORE Storing');
-
-    // **Store the AI response**
     $messages[] = [
       'role' => 'assistant',
       'content' => $ai_response_text,
     ];
-
-    //dpm($messages, 'Final Messages');
   } catch (Exception $e) {
     backdrop_set_message(t('OpenAI chat exception: @error', ['@error' => $e->getMessage()]), 'error');
     return;
   }
 
-  // ✅ Get system messages checkbox value
   $show_system_messages = !empty($form_state['values']['system_messages']);
-
-  //dpm($show_system_messages, '✅ Show System Messages Checkbox Value');
-
-  // ✅ Only filter system messages if checkbox is unchecked
   if (!$show_system_messages) {
     $messages = array_filter($messages, function ($msg) {
       return $msg['role'] !== 'system';
     });
   }
-
-  // **Store Messages for Display**
   $form_state['storage']['messages'] = $messages;
-  //dpm($form_state['storage']['messages'], '📌 Stored Messages Before
-  // Rendering');
   $form_state['rebuild'] = TRUE;
 }

@@ -5,3 +5,4 @@ package = Search
 backdrop = 1.x
 dependencies[] = openai
 dependencies[] = search_api
+dependencies[] = search_api_db
