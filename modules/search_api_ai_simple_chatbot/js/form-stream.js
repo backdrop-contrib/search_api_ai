@@ -6,7 +6,9 @@
   function once(id, $elements) {
     return $elements.filter(function () {
       const alreadyProcessed = $(this).data('once-' + id);
-      if (alreadyProcessed) return false;
+      if (alreadyProcessed) {
+        return false;
+      }
       $(this).data('once-' + id, true);
       return true;
     });
@@ -36,7 +38,7 @@
 
           data.push({
             name: event.currentTarget.name,
-            value: event.currentTarget.value
+            value: event.currentTarget.value,
           });
 
           $.ajax({
@@ -46,15 +48,15 @@
             xhrFields: {
               onprogress: function (event) {
                 if (responseField.length && responseField[0]) {
-                  responseField.html(event.currentTarget.response.replaceAll("\n", "<br />"));
+                  responseField.html(event.currentTarget.response.replaceAll('\n', '<br />'));
                   responseField.scrollTop(responseField[0].scrollHeight);
                 }
-              }
-            }
+              },
+            },
           });
         });
       });
-    }
+    },
   };
 
 })(jQuery, Backdrop);
@@ -67,7 +69,9 @@
       $('.chat-form-query', context).each(function () {
         const $textarea = $(this);
 
-        if ($textarea.hasClass('enter-submit-attached')) return;
+        if ($textarea.hasClass('enter-submit-attached')) {
+          return;
+        }
         $textarea.addClass('enter-submit-attached');
 
         $textarea.on('keydown', function (e) {
@@ -80,7 +84,7 @@
           }
         });
       });
-    }
+    },
   };
 
 })(jQuery, Backdrop);
@@ -90,19 +94,27 @@
 
   Backdrop.behaviors.chatToggleBehavior = {
     attach: function (context) {
-      $('.chat-toggle-button', context).once('chat-toggle').on('click', function () {
+      $('.chat-toggle-button', context).once('chat-toggle').each(function () {
         const $button = $(this);
         const $block = $button.closest('.block-search-api-ai-simple-chatbot-search-api-ai-chat-form');
 
-        // Just toggle the class, don’t use slideToggle.
-        $block.toggleClass('collapsed');
+        // Check localStorage on page load
+        const isCollapsed = localStorage.getItem('chatbot-collapsed') === 'true';
+        if (isCollapsed) {
+          $block.addClass('collapsed');
+          $button.text('💬 Open Chat');
+        } else {
+          $block.removeClass('collapsed');
+          $button.text('💬 Chat');
+        }
 
-        const isCollapsed = $block.hasClass('collapsed');
-        $button.text(isCollapsed ? '💬 Open Chat' : '💬 Chat');
+        $button.on('click', function () {
+          $block.toggleClass('collapsed');
+          const isNowCollapsed = $block.hasClass('collapsed');
+          localStorage.setItem('chatbot-collapsed', isNowCollapsed);
+          $button.text(isNowCollapsed ? '💬 Open Chat' : '💬 Chat');
+        });
       });
-    }
+    },
   };
 })(jQuery, Backdrop);
-
-
-

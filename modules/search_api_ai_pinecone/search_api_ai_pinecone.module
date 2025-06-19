@@ -19,26 +19,25 @@ function search_api_ai_pinecone_views_data_alter(&$data) {
 }
 
 /**
- * Implements hook_search_api_service_info().
- */
-function search_api_ai_pinecone_search_api_service_info() {
-  return [
-    'pinecone_service' => [
-      'name' => t('Pinecone'),
-      'description' => t('Pinecone backend for Search API AI.'),
-      'class' => 'PineconeService',
-      'file' => 'includes/service.inc', // Ensure Backdrop loads the
-      // file
-    ],
-  ];
-}
-
-/**
  * Implements hook_autoload_info().
  */
 function search_api_ai_pinecone_autoload_info() {
   return [
     'PineconeService' => 'includes/service.inc',
+  ];
+}
+
+/**
+ * Implements hook_search_api_service_info().
+ */
+function search_api_ai_pinecone_search_api_service_info() {
+  return [
+    'pinecone' => [
+      'name' => t('Pinecone'),
+      'description' => t('Pinecone backend for Search API AI.'),
+      'class' => 'PineconeService',
+      'file' => 'includes/service.inc',
+    ],
   ];
 }
 

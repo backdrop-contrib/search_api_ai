@@ -14,13 +14,11 @@ class PineconeService extends SearchApiAbstractService {
    */
   public function __construct(SearchApiServer $server) {
     parent::__construct($server);
-
-    // Load the Pinecone vector client.
-    $plugin_id = config_get('openai_embeddings.settings', 'vector_client_plugin');
-    $this->client = openai_embeddings_get_vector_client($plugin_id);
-
+    // Use the server options, not the global openai_embeddings config.
+    $plugin_id = $this->options['vector_client_plugin'] ?? 'pinecone';
+    $this->client = openai_embeddings_get_vector_client($plugin_id, $this->options);
     if (!$this->client) {
-      watchdog('search_api_ai_pinecone', 'Error: openai_embeddings_get_vector_client() returned NULL.', WATCHDOG_ERROR);
+      watchdog('search_api_ai_pinecone', 'Error: openai_embeddings_get_vector_client() returned NULL for plugin_id @id', ['@id' => $plugin_id], WATCHDOG_ERROR);
     }
   }
 
@@ -44,140 +42,95 @@ class PineconeService extends SearchApiAbstractService {
    * Indexes items in Pinecone.
    */
   public function indexItems(SearchApiIndex $index, array $items) {
+    //dpm($items, 'items');
     global $search_api_ai_vectors;
     global $search_api_ai_is_indexing;
     $search_api_ai_is_indexing = TRUE;
-
+    //dpm($search_api_ai_vectors, 'search_api_ai_vectors');
     $expected_dimension = search_api_ai_get_embedding_dimension();
     $namespace = $this->getNamespace($index);
     $successful_item_ids = [];
     $batch_vectors = [];
 
-    watchdog('search_api_ai_pinecone', '📌 indexItems() started for index @index with @count items. Expected dimension: @dim', [
-      '@index' => $index->machine_name,
+    watchdog('search_api_ai_pinecone', '📌 Function called: @function with @count items (Expected Dimension: @dimension)', [
+      '@function' => __METHOD__,
       '@count' => count($items),
-      '@dim' => $expected_dimension,
-    ], WATCHDOG_INFO);
+      '@dimension' => $expected_dimension,
+    ], WATCHDOG_DEBUG);
 
-    foreach ($items as $id => $item) {
-      $entity = NULL;
-      $entity_type = NULL;
-      $entity_id = NULL;
+    if (empty($items)) {
+      watchdog('search_api_ai_pinecone', '❌ No items to index. Exiting.', [], WATCHDOG_WARNING);
+      return [];
+    }
 
-      // ✅ Case 1: ID is like 'node/6'
-      if (is_string($id) && strpos($id, '/') !== FALSE) {
-        list($entity_type, $entity_id) = explode('/', $id, 2);
-        $entity = entity_load($entity_type, $entity_id);
+    foreach ($items as $item) {
+      if (is_array($item)) {
+        $item = (object) $item;
       }
 
-      // ✅ Case 2: ID is numeric (e.g., 6) and $item is a field array
-      elseif (is_numeric($id) && is_array($item)) {
-        // Attempt to infer type from available fields (fragile, but works in many Backdrop cases)
-        if (isset($item['nid'])) {
-          $entity_type = 'node';
-          $entity_id = $id;
-          $entity = node_load($entity_id);
-        } elseif (isset($item['tid'])) {
-          $entity_type = 'taxonomy_term';
-          $entity_id = $id;
-          $entity = taxonomy_term_load($entity_id);
-        } elseif (isset($item['item_id'])) {
-          $entity_type = 'paragraphs_item';
-          $entity_id = $id;
-          $entity = entity_load('paragraphs_item', $entity_id);
-        } else {
-          watchdog('search_api_ai', '⚠️ Could not determine entity type for item with numeric ID: @id', [
-            '@id' => $id,
-          ], WATCHDOG_WARNING);
-          continue;
-        }
+      // ✅ Extract the item ID properly
+      $item_id = isset($item->nid['value']) ? (int) $item->nid['value'] : (isset($item->nid) ? (int) $item->nid : NULL);
+      if (empty($item_id)) {
+        watchdog('search_api_ai_pinecone', '⚠️ Skipping item due to missing item_id.', [], WATCHDOG_WARNING);
+        continue;
       }
-
-      else {
-        watchdog('search_api_ai', '⚠️ Unexpected item format: <pre>@item</pre>', [
-          '@item' => print_r($item, TRUE),
-        ], WATCHDOG_WARNING);
+      $vector_key = "node/$item_id";
+      if (empty($search_api_ai_vectors[$vector_key]['vectors'])) {
+        watchdog('search_api_ai_pinecone', "⚠️ No vectors found for item $vector_key.", [], WATCHDOG_WARNING);
         continue;
       }
 
-      if (!$entity) {
-        watchdog('search_api_ai', '⚠️ Failed to load entity: @type/@id', [
-          '@type' => $entity_type,
-          '@id' => $entity_id,
-        ], WATCHDOG_WARNING);
-        continue;
-      }
+      foreach ($search_api_ai_vectors[$vector_key]['vectors'] as $field_name => $vector_entries) {
 
-      [$entity_type, $entity_id_str] = explode('/', $id, 2);
-      $item_key = "{$entity_type}/{$entity_id_str}";
 
-      if (
-        empty($search_api_ai_vectors[$item_key]) ||
-        empty($search_api_ai_vectors[$item_key]['vectors']) ||
-        !is_array($search_api_ai_vectors[$item_key]['vectors'])
-      ) {
-        watchdog('search_api_ai_pinecone', '⚠️ No vectors found for entity @key. Marking as indexed anyway.', ['@key' => $item_key], WATCHDOG_INFO);
-
-        // Mark the item as successfully handled to avoid index mismatch.
-        $successful_item_ids[] = $item_key;
-        continue;
-      }
-
-      foreach ($search_api_ai_vectors[$item_key]['vectors'] as $field_name => $vector_entry) {
-        $vector_data = $vector_entry['vectors'] ?? NULL;
-
-        // Log vector info
-        watchdog('search_api_ai_pinecone', '🧪 Field @field for @key: count = @count', [
-          '@field' => $field_name,
-          '@key' => $item_key,
-          '@count' => is_array($vector_data) ? count($vector_data) : 'not an array',
-        ], WATCHDOG_DEBUG);
-
-        if (
-          !is_array($vector_data) ||
-          count($vector_data) !== $expected_dimension
-        ) {
-          watchdog('search_api_ai_pinecone', '❌ Invalid or missing vector for @field in @key.', [
-            '@field' => $field_name,
-            '@key' => $item_key,
-          ], WATCHDOG_ERROR);
+        if (!isset($vector_entries['vectors']) || !is_array($vector_entries['vectors'])) {
+          watchdog('search_api_ai_pinecone', "❌ Missing or invalid vectors for field $field_name in item $item_id.", [], WATCHDOG_ERROR);
           continue;
         }
 
-        $content_text = isset($vector_entry['content']) && is_string($vector_entry['content'])
-          ? strip_tags($vector_entry['content'])
-          : '';
+        $vectors = $vector_entries['vectors'];
 
-        $pinecone_id = "entity:{$entity_type}/{$entity_id_str}:en:{$field_name}:0";
+        if (count($vectors) !== $expected_dimension) {
+          watchdog('search_api_ai_pinecone', "❌ Invalid vector size for field $field_name in item $item_id: Expected $expected_dimension, got " . count($vectors), [], WATCHDOG_ERROR);
+          continue;
+        }
+
+        // ✅ Extract text content for metadata
+        $content_text = "";
+        if (isset($vector_entries['content']) && is_string($vector_entries['content'])) {
+          $content_text = strip_tags($vector_entries['content']);
+        }
+
+        $pinecone_id = "entity:node/{$item_id}:en:{$field_name}:0";
 
         $batch_vectors[] = [
           'id' => $pinecone_id,
-          'values' => array_map('floatval', $vector_data),
-          'metadata' => [
-            'content' => $content_text,
-          ],
+          'values' => array_values(array_map('floatval', $vectors)),
+          'metadata' => ['content' => $content_text],
         ];
       }
-      $successful_item_ids[] = $item_key;
+
+      $successful_item_ids[] = $item_id;
     }
 
+    // ✅ Send all vectors in one batch request
     if (!empty($batch_vectors)) {
-      watchdog('search_api_ai_pinecone', '📤 Sending @count vectors to Pinecone (namespace: @ns)', [
-        '@count' => count($batch_vectors),
-        '@ns' => $namespace,
-      ], WATCHDOG_INFO);
-
       try {
         $this->client->upsert([
           'vectors' => $batch_vectors,
           'namespace' => $namespace,
         ]);
-        watchdog('search_api_ai_pinecone', '✅ Upsert completed successfully.', [], WATCHDOG_INFO);
+
+        watchdog('search_api_ai_pinecone', '🚀 Successfully indexed @count vectors.', [
+          '@count' => count($batch_vectors),
+        ], WATCHDOG_NOTICE);
       } catch (\Exception $e) {
-        watchdog('search_api_ai_pinecone', '❌ Upsert failed: @error', ['@error' => $e->getMessage()], WATCHDOG_ERROR);
+        watchdog('search_api_ai_pinecone', '❌ Pinecone indexing error: @message', [
+          '@message' => $e->getMessage(),
+        ], WATCHDOG_ERROR);
       }
     } else {
-      watchdog('search_api_ai_pinecone', '⚠️ No valid vectors to send to Pinecone.', [], WATCHDOG_WARNING);
+      watchdog('search_api_ai_pinecone', '⚠️ No valid vectors to index.', [], WATCHDOG_WARNING);
     }
 
     return $successful_item_ids;
@@ -242,14 +195,16 @@ class PineconeService extends SearchApiAbstractService {
       ]);
 
       $matches = is_array($response) && isset($response['matches']) ? $response['matches'] : [];
-      dpm($matches, 'matches');
+      //dpm($matches, 'matches');
       $results = [];
 
       foreach ($matches as $match) {
         if (preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $m)) {
           $entity_type = $m[1];
           $entity_id = $m[2];
-          $item_id = "{$entity_type}/{$entity_id}";
+
+          // ✅ Normalize item ID format
+          $item_id = $index->getEntityType() === $entity_type ? $entity_id : "{$entity_type}/{$entity_id}";
 
           $results[$item_id] = [
             'item_id' => $item_id,
@@ -257,6 +212,7 @@ class PineconeService extends SearchApiAbstractService {
             'fields' => [],
             'extra_data' => [
               'metadata' => $match['metadata'] ?? [],
+              'pinecone_id' => $match['id'],
             ],
           ];
         }

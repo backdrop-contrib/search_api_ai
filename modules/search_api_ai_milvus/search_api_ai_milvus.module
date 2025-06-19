@@ -1,0 +1,25 @@
+<?php
+
+/**
+ * Implements hook_autoload_info().
+ */
+function search_api_ai_milvus_autoload_info() {
+  return [
+    'MilvusService' => 'includes/service.inc',
+  ];
+}
+
+/**
+ * Implements hook_search_api_service_info().
+ */
+function search_api_ai_milvus_search_api_service_info() {
+  return [
+    'milvus' => [
+      'name' => t('Milvus'),
+      'description' => t('Milvus backend for Search API AI.'),
+      'class' => 'MilvusService',
+      'file' => 'includes/service.inc',
+    ],
+  ];
+}
+
