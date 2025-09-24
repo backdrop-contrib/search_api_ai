@@ -6,6 +6,8 @@
 function search_api_ai_milvus_autoload_info() {
   return [
     'MilvusService' => 'includes/service.inc',
+    'SearchApiAiMilvusVectorClient' => 'includes/SearchApiAiMilvusVectorClient.php',
+    "SearchApiAiMilvusV2" => 'includes/SearchApiAiMilvusV2.php',
   ];
 }
 

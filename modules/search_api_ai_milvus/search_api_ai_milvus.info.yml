@@ -1,8 +1,0 @@
-name: 'Search API AI Milvus'
-type: module
-description: 'Provide a Milvus backend for Search API AI.'
-package: Search
-core_version_requirement: ^9 || ^10
-dependencies:
-  - search_api_ai:search_api_ai
-php: 8.2

@@ -3,6 +3,4 @@ description = Provide a Milvus backend for Search API AI.
 package = Search
 type = module
 backdrop = 1.x
-dependencies[] = openai_embeddings
 dependencies[] = search_api_ai
-

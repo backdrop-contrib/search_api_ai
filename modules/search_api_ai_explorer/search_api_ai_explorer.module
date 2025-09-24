@@ -29,16 +29,11 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
 
   // Load all indexes and servers at once.
   $indexes = entity_load_multiple('search_api_index');
-  //dpm($indexes, 'Indexes');
   $servers = entity_load_multiple('search_api_server');
-  //dpm($servers, 'Servers');
-
   foreach ($indexes as $index) {
     if (empty($index->server)) {
-      continue; // Skip indexes without a server
+      continue;
     }
-
-    // Find the matching server based on machine_name.
     $server = NULL;
     foreach ($servers as $s) {
       if ($s->machine_name == $index->server) {
@@ -46,37 +41,82 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
         break;
       }
     }
-
-    // Ensure the server exists and is Pinecone or Milvus.
-    if ($server && isset($server->class) && $server->class == 'pinecone_service' || $server->class == 'milvus') {
+    if ($server && isset($server->class) && ($server->class == 'pinecone' || $server->class == 'milvus')) {
       $form['index']['#options'][$index->machine_name] = $index->name;
     }
   }
-
   if (empty($form['index']['#options'])) {
     backdrop_set_message(t('No valid Pinecone search indexes found.'), 'warning');
     $form['index']['#options'] = ['' => t('- No indexes available -')];
   }
+
+  // Add Model dropdown, Chat Temperature, and Max Tokens fields directly after Index
+  $openai_config = config_get('openai.settings');
+  $apiKey = key_get_key_value($openai_config['api_key']);
+  $api = new OpenAIApi($apiKey);
+  $models = $api->filterModels(['gpt']);
+  $form['model'] = [
+    '#type' => 'select',
+    '#title' => t('Model'),
+    '#options' => $models,
+    '#default_value' => 'gpt-3.5-turbo',
+    '#description' => t('Select which model to use to analyze text. See the <a href=":link">model overview</a> for details about each model.', ['@link' => 'https://platform.openai.com/docs/models/gpt-3.5']),
+  ];
+  $form['chat_temperature'] = [
+    '#type' => 'number',
+    '#title' => t('Chat Temperature'),
+    '#min' => 0,
+    '#max' => 2,
+    '#step' => .1,
+    '#default_value' => isset($form_state['values']['chat_temperature']) ?
+      $form_state['values']['chat_temperature'] : 0.5,
+    '#description' => t('Controls randomness. Typical values: 0.0 (deterministic) to 1.0 (creative).'),
+  ];
+  $form['chat_max_tokens'] = [
+    '#type' => 'number',
+    '#title' => t('Max Tokens'),
+    '#min' => 128,
+    '#step' => 1,
+    '#default_value' => isset($form_state['values']['chat_max_tokens']) ? $form_state['values']['chat_max_tokens'] : 1024,
+    '#description' => t('Maximum number of tokens in the response.'),
+  ];
+
+  // Add Score Threshold field
+  $form['score_threshold'] = [
+    '#type' => 'number',
+    '#title' => t('Score Threshold'),
+    '#min' => 0,
+    '#max' => 1,
+    '#step' => 0.01,
+    '#default_value' => isset($form_state['values']['score_threshold']) ? $form_state['values']['score_threshold'] : 0.5,
+    '#description' => t('Minimum score for a result to be considered relevant (0.0 to 1.0).'),
+  ];
 
   // Load previously stored messages.
   $messages = isset($form_state['storage']['messages']) ? $form_state['storage']['messages'] : [];
   $filtered_messages = [];
   $first_user_found = FALSE;
 
+  // Get the value of the system messages checkbox, default to unchecked.
+  $show_system_messages = !empty($form_state['values']['system_messages']);
+
   foreach ($messages as $msg) {
+    // Only include system messages if the checkbox is checked.
+    if ($msg['role'] === 'system' && !$show_system_messages) {
+      continue;
+    }
     if ($msg['role'] === 'user') {
       if (!$first_user_found) {
         $filtered_messages[] = $msg;
         $first_user_found = TRUE; // Only include the first user message
       }
-    } elseif ($msg['role'] === 'assistant') {
-      $filtered_messages[] = $msg; // Always include assistant messages
+    } elseif ($msg['role'] === 'assistant' || $msg['role'] === 'system') {
+      $filtered_messages[] = $msg; // Always include assistant messages, and system if allowed
     }
   }
-  $document_links = [];
   $form['messages'] = [
     '#type' => 'markup',
-    '#markup' => '<div>' . implode('<br>', array_map(function ($msg) use ($document_links) {
+    '#markup' => '<div>' . implode('<br>', array_map(function ($msg) {
         $role = '<strong>' . check_plain(ucfirst($msg['role'])) . ':</strong> ';
 
         if ($msg['role'] === 'assistant') {
@@ -109,8 +149,6 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
     '#type' => 'checkbox',
     '#title' => t('Show system messages'),
   ];
-
-  // **Submit Button**
   $form['actions'] = ['#type' => 'actions'];
   $form['actions']['submit'] = [
     '#type' => 'submit',
@@ -123,12 +161,12 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
 /**
  * Extract matches and normalized metadata from any backend.
  */
-function search_api_ai_extract_contextual_sources($backend_class, $vector_results, $score_threshold = 0.50) {
+function search_api_ai_extract_contextual_sources($backend_class, $vector_results, $score_threshold) {
   $sources = [];
   $matches = [];
 
   // Pinecone: has 'matches' key. Milvus: direct array.
-  if ($backend_class === 'pinecone_service' && isset($vector_results['matches'])) {
+  if (($backend_class === 'pinecone' || $backend_class === 'pinecone_service') && isset($vector_results['matches'])) {
     $matches = $vector_results['matches'];
   }
   elseif ($backend_class === 'milvus' && is_array($vector_results) && !isset($vector_results['matches'])) {
@@ -149,9 +187,7 @@ function search_api_ai_extract_contextual_sources($backend_class, $vector_result
     $metadata = isset($match['metadata']) ? $match['metadata'] : $match;
 
     // Entity extraction
-    $datasource_id = '';
-    $item_id = '';
-    if (!empty($metadata['backdrop_entity_id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $metadata['backdrop_entity_id'], $m)) {
+   if (!empty($metadata['backdrop_entity_id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $metadata['backdrop_entity_id'], $m)) {
       $datasource_id = $m[1];
       $item_id = $m[2];
     } elseif (!empty($match['id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $m)) {
@@ -224,7 +260,7 @@ function search_api_ai_extract_contextual_sources($backend_class, $vector_result
       'url' => $url,
       'snippet' => $snippet,
       // You may want to include the raw score/distance for debugging:
-      'score' => $backend_class === 'pinecone_service' ? $match['score'] : $match['distance'],
+      'score' => ($backend_class === 'pinecone' || $backend_class === 'pinecone_service') ? $match['score'] : $match['distance'],
     ];
   }
   return $sources;
@@ -234,7 +270,6 @@ function search_api_ai_extract_contextual_sources($backend_class, $vector_result
 function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   $index_id = $form_state['values']['index'];
   $query_text = trim($form_state['values']['query']);
-  dpm($query_text, 'Query Text');
   // Load the selected index.
   $indexes = entity_load_multiple('search_api_index');
   $index = NULL;
@@ -264,24 +299,22 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   }
 
   // Retrieve OpenAI API key.
-  $openai_api_key_name = config_get('openai.settings', 'api_key');
-  $openai_api_key = key_get_key_value($openai_api_key_name);
+  $openai_config = config_get('openai.settings');
+  $apiKey = key_get_key_value($openai_config['api_key']);
+  $openai = new OpenAIApi($apiKey);
 
-  if (!$openai_api_key) {
-    backdrop_set_message(t('OpenAI API key is missing.'), 'error');
-    return;
+  // Get embedding model from index options, then from server options, then use default
+  $embedding_model = 'text-embedding-3-small';
+  if (!empty($index->options['embedding_settings']['embeddings_engine'])) {
+    $embedding_model = $index->options['embedding_settings']['embeddings_engine'];
+  }
+  elseif (!empty($server->options['embedding_model'])) {
+    $embedding_model = $server->options['embedding_model'];
   }
 
-  $openai = new OpenAIApi($openai_api_key);
-
-  // Load models from configuration.
-  $embedding_model = config_get('search_api_ai.settings', 'model') ?: 'text-embedding-3-small';
-  dpm($embedding_model, 'Embedding Model');
-  $chat_model = config_get('openai.settings', 'chat_model') ?: 'gpt-4o-mini';
-  if (!is_string($chat_model)) {
-    backdrop_set_message(t('⚠️ Chat model is not a valid string! Using default GPT-4.'), 'warning');
-    $chat_model = 'gpt-4';
-  }
+  $chat_model = isset($form_state['values']['model']) ? $form_state['values']['model'] : 'gpt-3.5-turbo';
+  $chat_temperature = isset($form_state['values']['chat_temperature']) ? floatval($form_state['values']['chat_temperature']) : 0.4;
+  $chat_max_tokens = isset($form_state['values']['chat_max_tokens']) ? intval($form_state['values']['chat_max_tokens']) : 000;
 
   // **Generate Embeddings**
   try {
@@ -294,12 +327,11 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     backdrop_set_message(t('Error generating embeddings: @error', ['@error' => $e->getMessage()]), 'error');
     return;
   }
-  dpm($embedding_vector, 'Embedding Vector');
   // --- Determine backend and perform vector search ---
   $vector_results = [];
   $backend_class = $server->class;
 
-  if ($backend_class === 'pinecone') {
+  if ($backend_class === 'pinecone' || $backend_class === 'pinecone_service') {
     $pinecone_service = new PineconeService($server);
     $namespace = trim($pinecone_service->getNamespace($index));
     if (strpos($namespace, ':') === 0) {
@@ -315,7 +347,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       'namespace' => $namespace,
       'include_metadata' => TRUE,
     ];
-    $client = new PineconeVectorClient();
+    $client = new SearchApiAiPineconeVectorClient($server->options);
     try {
       $vector_results = $client->query($query_options);
       if (empty($vector_results['matches'])) {
@@ -351,15 +383,14 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
         'index_id'
       ],
     ];
-    $milvus_settings = config_get('openai_embeddings.settings');
-    $client = new MilvusVectorClient($milvus_settings);
+    // Pass server options directly to the client
+    $client = new SearchApiAiMilvusVectorClient($server->options);
     if (!$client) {
       backdrop_set_message(t('Milvus client is not initialized.'), 'error');
       return;
     }
     try {
       $vector_results = $client->query($query_options);
-      dpm($vector_results, 'Milvus Results');
       if (empty($vector_results)) {
         backdrop_set_message(t('No relevant results found in Milvus.'), 'warning');
         return;
@@ -375,8 +406,9 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   }
 
   // --- Process Results and Add to Messages ---
-  $score_threshold = 0.30;
+  $score_threshold = isset($form_state['values']['score_threshold']) ? floatval($form_state['values']['score_threshold']) : 0.5;
   $sources = search_api_ai_extract_contextual_sources($backend_class, $vector_results, $score_threshold);
+
   $document_links = [];
   $formatted_sources = [];
   foreach ($sources as $src) {
@@ -422,7 +454,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
 
   // **Call OpenAI Chat Model**
   try {
-    $ai_response = $openai->chat($chat_model, $messages, 0.4, 1024);
+    $ai_response = $openai->chat($chat_model, $messages, $chat_temperature, $chat_max_tokens);
     if (!empty($ai_response)) {
       $ai_response_text = trim($ai_response);
     } else {

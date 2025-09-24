@@ -1,18 +1,19 @@
 <?php
+
 /**
  * @file
- * Views hook implementations for Search API Pinecone in Backdrop CMS.
+ * Module hooks for Search API Pinecone in Backdrop CMS.
  */
 
 /**
  * Implements hook_views_data_alter().
  */
 function search_api_ai_pinecone_views_data_alter(&$data) {
-  // Load all search API indexes.
   $indexes = search_api_index_load_multiple();
   foreach ($indexes as $index) {
     $server = search_api_server_load($index->server);
-    if ($server && $server->backend == 'search_api_ai_pinecone') {
+    // IMPORTANT: match the service id 'pinecone' like Milvus does 'milvus'.
+    if ($server && $server->backend == 'pinecone') {
       unset($data['search_api_index_' . $index->machine_name]);
     }
   }
@@ -23,7 +24,8 @@ function search_api_ai_pinecone_views_data_alter(&$data) {
  */
 function search_api_ai_pinecone_autoload_info() {
   return [
-    'PineconeService' => 'includes/service.inc',
+    'PineconeService'                 => 'includes/service.inc',
+    'SearchApiAiPineconeVectorClient' => 'includes/SearchApiAiPineconeVectorClient.php',
   ];
 }
 
@@ -33,11 +35,10 @@ function search_api_ai_pinecone_autoload_info() {
 function search_api_ai_pinecone_search_api_service_info() {
   return [
     'pinecone' => [
-      'name' => t('Pinecone'),
+      'name'        => t('Pinecone'),
       'description' => t('Pinecone backend for Search API AI.'),
-      'class' => 'PineconeService',
-      'file' => 'includes/service.inc',
+      'class'       => 'PineconeService',
+      'file'        => 'includes/service.inc',
     ],
   ];
 }
-

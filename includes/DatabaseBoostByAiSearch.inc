@@ -1,8 +1,10 @@
 <?php
 
 /**
- * Boosts database search results using AI Search matches.
+ * @file
+ * Provides the DatabaseBoostByAiSearch processor for Search API AI.
  */
+
 class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
 
   public function __construct(SearchApiIndex $index, array $options = array()) {
@@ -11,16 +13,13 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
   }
 
   public function preprocessSearchQuery(SearchApiQuery $query) {
-    dpm($query);
     $keywords = $query->getKeys();
     if (empty($keywords)) {
       return;
     }
 
     $results = $this->getAiSearchResults($keywords);
-    dpm($results);
     if (!empty($results)) {
-      // Instead of addTag(), we store in meta data.
       $query->setOption('ai_search_ids', array_keys($results));
     }
   }
@@ -29,7 +28,6 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
     $server = search_api_server_load($index->server);
     return $server && $server->class === 'search_api_db_service';
   }
-
 
   public function defaultConfiguration() {
     return array(
@@ -44,13 +42,14 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
 
     $options = array('' => t('- Select -'));
     $indexes = search_api_index_load_multiple(FALSE);
-    dpm($indexes);
     foreach ($indexes as $index) {
       if ($index->machine_name == $this->index->machine_name) {
         continue;
       }
       $server = search_api_server_load($index->server);
-      if ($server && in_array($server->class, ['search_api_ai_search', 'search_api_pinecone', 'pinecone', 'search_api_milvus', 'milvus'])) {
+      if ($server && in_array($server->class, [
+        'search_api_ai_search', 'search_api_pinecone', 'pinecone', 'search_api_milvus', 'milvus'
+      ])) {
         $options[$index->machine_name] = check_plain($index->name) . ' (' . check_plain($server->name) . ')';
       }
     }
@@ -85,7 +84,6 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
     parent::configurationFormValidate($form, $values, $form_state);
 
     $server = search_api_server_load($this->index->server);
-    dpm($server);
     if ($server && $server->class !== 'search_api_db_service') {
       form_set_error('search_api_ai_index', t('This processor plugin only supports Database search backend.'));
     }
@@ -122,7 +120,6 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
     $query->setOption('search_api_bypass_access', TRUE);
     $results = $query->execute();
 
-    dpm($results);
     $matches = array();
     if (!empty($results['results']) && is_array($results['results'])) {
       foreach ($results['results'] as $id => $item) {
@@ -131,53 +128,90 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
         }
       }
     }
-    dpm($matches);
     return $matches;
   }
 
+  /**
+   * Alters the query to combine AI results with DB keyword results.
+   */
   public static function queryAlter(SelectQueryInterface $query, array $item_ids) {
     if (empty($item_ids)) {
       return;
     }
-
     $search_alias = 't';
 
-    // DO NOT transform IDs — your DB index uses plain numeric values like 38, 39
-
-    // Attempt to find and remove the original keyword condition
-    $conditions = &$query->conditions();
-    $keyword_condition = NULL;
-    foreach ($conditions as $key => $condition) {
-      if (is_array($condition)
-        && isset($condition['field'], $condition['value'], $condition['operator'])
-        && $condition['field'] === "$search_alias.word"
+    // 1. Find and alter the subquery over the text index table.
+    foreach ($query->getTables() as &$table) {
+      if (
+        is_array($table) &&
+        isset($table['table']) &&
+        $table['table'] instanceof SelectQueryInterface
       ) {
-        $keyword_condition = $condition;
-        unset($conditions[$key]); // Important: remove it so it's not ANDed
-        break;
+        $subquery = &$table['table'];
+        $conditions = &$subquery->conditions();
+
+        // Debug: Log the initial conditions so you can see structure in watchdog.
+        // Uncomment this if debugging:
+        // watchdog('ai_search', 'Subquery initial conditions: <pre>@data</pre>', [
+        //   '@data' => print_r($conditions, TRUE),
+        // ]);
+
+        // Allow for both "t.word" and "word", and "t.item_id" and "item_id".
+        $word_fields = ["$search_alias.word", 'word'];
+        $item_id_fields = ["$search_alias.item_id", 'item_id'];
+
+        // Remove and collect all relevant conditions.
+        $word_condition = NULL;
+        $field_name_condition = NULL;
+
+        foreach ($conditions as $key => $condition) {
+          if (is_array($condition) && isset($condition['field'])) {
+            if (in_array($condition['field'], $word_fields)) {
+              $word_condition = $condition;
+              unset($conditions[$key]);
+            } elseif ($condition['field'] === 'field_name') {
+              $field_name_condition = $condition;
+              unset($conditions[$key]);
+            } elseif (in_array($condition['field'], $item_id_fields)) {
+              unset($conditions[$key]);
+            }
+          }
+        }
+
+        // Build the big OR group.
+        $or = db_or();
+
+        if ($word_condition && $field_name_condition) {
+          $and1 = db_and();
+          $and1->condition($word_condition['field'], $word_condition['value'], $word_condition['operator']);
+          $and1->condition($field_name_condition['field'], $field_name_condition['value'], $field_name_condition['operator']);
+          $or->condition($and1);
+        }
+
+        if ($field_name_condition) {
+          $and2 = db_and();
+          $and2->condition($item_id_fields[0], $item_ids, 'IN');
+          $and2->condition($field_name_condition['field'], $field_name_condition['value'], $field_name_condition['operator']);
+          $or->condition($and2);
+        } else {
+          // Fallback: If no field_name (should not happen), just match item IDs.
+          $or->condition($item_id_fields[0], $item_ids, 'IN');
+        }
+
+        // Remove all numeric keys, keep #conjunction.
+        foreach (array_keys($conditions) as $key) {
+          if (is_int($key)) {
+            unset($conditions[$key]);
+          }
+        }
+        // Ensure root #conjunction is present.
+        $conditions['#conjunction'] = 'AND';
+        // Add our single OR group.
+        $subquery->condition($or);
       }
     }
 
-    // Build db_or() condition group: (keyword match OR item_id IN ...)
-    $or = db_or();
-    if ($keyword_condition) {
-      $or->condition($keyword_condition['field'], $keyword_condition['value'], $keyword_condition['operator']);
-    }
-    $or->condition("$search_alias.item_id", $item_ids, 'IN');
-    $query->condition($or); // Safe: adds (keyword OR id) as a group
-
-    // Remove having clause if it restricts based on keyword match count
-    $having_conditions = &$query->havingConditions();
-    foreach ($having_conditions as $key => $condition) {
-      if (is_array($condition)
-        && isset($condition['field'])
-        && str_contains($condition['field'], 'COUNT(DISTINCT')
-      ) {
-        unset($having_conditions[$key]);
-      }
-    }
-
-    // Add AI boost score as CASE expression
+    // 2. Add AI boost score as CASE expression to the OUTER query
     $placeholders = [];
     $parts = [];
     $weight = count($item_ids);
@@ -192,7 +226,19 @@ class DatabaseBoostByAiSearch extends SearchApiAbstractProcessor {
     $query->groupBy("$search_alias.item_id");
     $query->orderBy('ai_boost', 'DESC');
 
-    // Debugging
-    watchdog('ai_search', 'Final query: @sql', ['@sql' => (string) $query]);
+    // Remove interfering HAVING clauses.
+    $having_conditions = &$query->havingConditions();
+    foreach ($having_conditions as $key => $condition) {
+      if (is_array($condition)
+        && isset($condition['field'])
+        && strpos($condition['field'], 'COUNT(DISTINCT') !== FALSE
+      ) {
+        unset($having_conditions[$key]);
+      }
+    }
+
+    // Debugging: Uncomment if needed.
+    // watchdog('ai_search', 'Final query: @sql', ['@sql' => (string) $query]);
   }
+
 }

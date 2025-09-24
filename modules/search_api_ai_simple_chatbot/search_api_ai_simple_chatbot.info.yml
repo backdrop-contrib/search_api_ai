@@ -1,9 +1,0 @@
-name: 'Search API AI Simple Chatbot'
-type: module
-description: 'Provides a simple chatbot to use with Search API AI.'
-package: Search
-core_version_requirement: ^9 || ^10
-dependencies:
-  - search_api_ai:search_api_ai
-  - jquery_once:jquery_once
-  - openai:openai
