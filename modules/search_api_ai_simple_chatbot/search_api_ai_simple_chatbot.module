@@ -1,32 +1,59 @@
 <?php
 
-function search_api_ai_simple_chatbot_form(
-  $form,
-  &$form_state,
-  $block_id = NULL,
-  $chat_config = []
-) {
-  $form['#attached']['css'][] = backdrop_get_path(
-      'module',
-      'search_api_ai_simple_chatbot'
-    ) . '/css/chat.css';
-  $form['#attached']['js'][] = backdrop_get_path(
-      'module',
-      'search_api_ai_simple_chatbot'
-    ) . '/js/form-stream.js';
+/**
+ * Chat form (renders full transcript + input).
+ */
+function search_api_ai_simple_chatbot_form($form, &$form_state, $block_id = NULL, $chat_config = []) {
+  // Assets.
+  $form['#attached']['css'][] = backdrop_get_path('module', 'search_api_ai_simple_chatbot') . '/css/chat.css';
+  $form['#attached']['js'][]  = backdrop_get_path('module', 'search_api_ai_simple_chatbot') . '/js/form-stream.js';
+
+  // AJAX wrapper for full form replace.
   $form['#prefix'] = '<div id="chatbot-form-wrapper">';
   $form['#suffix'] = '</div>';
 
-  $response_id = backdrop_html_id($block_id . '-response');
+  // Ensure session chat history exists.
+  if (!isset($_SESSION['search_api_ai_chat_history'])) {
+    $_SESSION['search_api_ai_chat_history'] = [];
+  }
+  $history      = $_SESSION['search_api_ai_chat_history'];
+  $stream_last  = !empty($form_state['search_api_ai_stream_last']);
 
-  // Display the AI's response. Each new submission overwrites the old one.
-  $form['response'] = [
-    '#type'   => 'markup',
-    '#markup' => !empty($form_state['response']) ? $form_state['response'] : '',
-    '#prefix' => '<div id="' . $response_id . '" class="chat-form-response">',
-    '#suffix' => '</div>',
+  // Render full transcript in a scrollable container above the input.
+  $history_html = '<div class="chat-history-scroll">';
+  $count = count($history);
+  foreach ($history as $i => $ex) {
+    $is_last   = ($i === $count - 1) && $stream_last;
+    $q_text    = check_plain($ex['question'] ?? '');
+    $a_text    = check_plain($ex['answer'] ?? '');
+    $sources   = !empty($ex['sources']) ? $ex['sources'] : '';
+    $history_html .= '<div class="chat-history-exchange">';
+    $history_html .=   '<div class="chat-history-question"><strong>Q:</strong> ' . $q_text . '</div>';
+    $history_html .=   '<div class="chat-history-answer"><strong>A:</strong> ';
+    if ($is_last) {
+      $history_html .= '<span class="chat-stream-text">' . $a_text . '</span>';
+      if (!empty($sources)) {
+        $history_html .= '<br><span class="chat-source-link" style="display:none;">' . $sources . '</span>';
+      }
+    }
+    else {
+      $history_html .= '<span class="answer-text">' . $a_text . '</span>';
+      if (!empty($sources)) {
+        // Render sources as raw HTML, not escaped
+        $history_html .= '<br><span class="chat-source-link">' . $sources . '</span>';
+      }
+    }
+    $history_html .=   '</div>';
+    $history_html .= '</div>';
+  }
+  $history_html .= '</div>';
+
+  $form['chat_history'] = [
+    '#markup' => $history_html,
+    '#weight' => -100,
   ];
 
+  // Query input (stays under the streamed answer).
   $form['query'] = [
     '#type'          => 'textarea',
     '#title'         => t('Ask me a question'),
@@ -37,102 +64,154 @@ function search_api_ai_simple_chatbot_form(
     ],
     '#required'      => TRUE,
     '#rows'          => 1,
+    '#weight'        => 0,
   ];
 
-  $form['actions'] = ['#type' => 'actions'];
+  // Actions.
+  $form['actions'] = ['#type' => 'actions', '#weight' => 10];
+
   $form['actions']['submit'] = [
     '#type'       => 'submit',
     '#value'      => t('Send'),
     '#ajax'       => [
       'callback' => 'search_api_ai_simple_chatbot_ajax_response',
-      'wrapper'  => 'chatbot-form-wrapper', // << replaces the whole form
+      'wrapper'  => 'chatbot-form-wrapper',
       'method'   => 'replace',
       'effect'   => 'fade',
     ],
+    '#attributes'  => ['class' => ['chat-form-send', 'btn', 'btn-success']],
+  ];
+
+  // Hidden Clear History submit (triggered by topbar button; bypasses validation).
+  $form['actions']['clear_history_submit'] = [
+    '#type'       => 'submit',
+    '#value'      => t('Clear History'),
+    '#name'       => 'clear_history',
+    '#ajax'       => [
+      'callback' => 'search_api_ai_simple_chatbot_ajax_response',
+      'wrapper'  => 'chatbot-form-wrapper',
+      'method'   => 'replace',
+      'effect'   => 'fade',
+    ],
+    '#limit_validation_errors' => [],
+    '#submit'    => ['search_api_ai_simple_chatbot_clear_history_submit'],
     '#attributes' => [
-      'class' => ['chat-form-send'],
+      'class' => ['chat-form-clear-history-proxy', 'visually-hidden'],
+      'tabindex' => '-1',
+      'aria-hidden' => 'true',
     ],
   ];
 
-  $form['response']['#post_render']
-    = ['search_api_ai_simple_chatbot_render_response'];
-
   return $form;
-}
-
-function search_api_ai_simple_chatbot_render_response($markup, $element) {
-  return isset($element['#markup']) ? $element['#markup'] : '';
 }
 
 function search_api_ai_simple_chatbot_ajax_response($form, &$form_state) {
   return $form;
 }
 
-function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
+/**
+ * Clear history submit (invoked by hidden submit).
+ */
+function search_api_ai_simple_chatbot_clear_history_submit($form, &$form_state) {
+  $_SESSION['search_api_ai_chat_history'] = [];
+  // Rebuild with empty transcript.
+  $form_state['search_api_ai_stream_last'] = FALSE;
+  $form_state['rebuild'] = TRUE;
+  $form_state['input']['query']  = '';
+  $form_state['values']['query'] = '';
+}
 
-  $chat_config = config_get(
-    'search_api_ai_simple_chatbot.settings',
-    'chat_config'
-  ) ?: [];
-  $user_query = trim($form_state['values']['query']);
+/**
+ * Main submit: perform RAG + LLM, then append to session transcript.
+ */
+function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
+  // 0) Clear-history fallback if it sneaks in here.
+  if (!empty($form_state['values']['clear_history']) || !empty($form_state['input']['clear_history'])) {
+    return search_api_ai_simple_chatbot_clear_history_submit($form, $form_state);
+  }
+
+  $chat_config = config_get('search_api_ai_simple_chatbot.settings', 'chat_config') ?: [];
+  $user_query  = trim($form_state['values']['query']);
+
+  // Debug (optional)
+  if (!empty($chat_config['debug'])) {
+    watchdog('search_api_ai_simple_chatbot', 'DEBUG system: @role',      ['@role' => $chat_config['chat_system_role'] ?? '']);
+    watchdog('search_api_ai_simple_chatbot', 'DEBUG assistant: @assist', ['@assist' => $chat_config['assistant_message'] ?? '']);
+    watchdog('search_api_ai_simple_chatbot', 'DEBUG user tmpl: @user',   ['@user' => $chat_config['user_message'] ?? '']);
+  }
+
+  // Ensure transcript array.
+  if (!isset($_SESSION['search_api_ai_chat_history'])) {
+    $_SESSION['search_api_ai_chat_history'] = [];
+  }
+  $history = $_SESSION['search_api_ai_chat_history'];
+
+  // 1) Index & server
   $index = entity_load('search_api_index', $chat_config['index']);
   if (!$index || empty($index->server)) {
-    $form_state['response'] = $chat_config['error_message'];
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => check_plain($chat_config['error_message']),
+      'sources'  => '',
+    ];
+    $form_state['search_api_ai_stream_last'] = TRUE;
+    $form_state['rebuild'] = TRUE;
     return;
   }
 
-  // Load the associated server.
   $servers = entity_load_multiple('search_api_server');
   $server = NULL;
   foreach ($servers as $s) {
-    if ($s->machine_name === $index->server) {
-      $server = $s;
-      break;
-    }
+    if ($s->machine_name === $index->server) { $server = $s; break; }
   }
-
   if (!$server || ($server->class !== 'pinecone' && $server->class !== 'milvus')) {
-    $form_state['response'] = $chat_config['error_message'];
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => check_plain($chat_config['error_message']),
+      'sources'  => '',
+    ];
+    $form_state['search_api_ai_stream_last'] = TRUE;
+    $form_state['rebuild'] = TRUE;
     return;
   }
 
-  $collection = '';
+  // Namespace / collection.
   if ($server->class === 'pinecone') {
     $pinecone_service = new PineconeService($server);
     $collection = trim($pinecone_service->getNamespace($index));
-    if (strpos($collection, ':') === 0) {
-      $collection = substr($collection, 1);
-    }
-  }
-  else if ($server->class === 'milvus') {
+    if (strpos($collection, ':') === 0) { $collection = substr($collection, 1); }
+  } else {
     $collection = !empty($server->options['collection']) ? $server->options['collection'] : $index->machine_name;
   }
 
-  // ---- OpenAI embedding ----
+  // 2) OpenAI client + models
   $openai_api_key_name = config_get('openai.settings', 'api_key');
   $openai_api_key = key_get_key_value($openai_api_key_name);
   $openai = new OpenAIApi($openai_api_key);
 
   $embedding_model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
-  $chat_model = $chat_config['chat_model'] ?? 'gpt-4';
+  $chat_model      = $chat_config['chat_model'] ?? 'gpt-4';
 
+  // 3) Embedding
   try {
     $embedding_vector = $openai->embedding($user_query, $embedding_model);
-    if (empty($embedding_vector)) {
-      $form_state['response'] = $chat_config['error_message'];
-      return;
-    }
-  }
-  catch (Exception $e) {
+    if (empty($embedding_vector)) { throw new Exception('Empty embedding.'); }
+  } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
-    $form_state['response'] = $chat_config['error_message'];
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => check_plain($chat_config['error_message']),
+      'sources'  => '',
+    ];
+    $form_state['search_api_ai_stream_last'] = TRUE;
+    $form_state['rebuild'] = TRUE;
     return;
   }
 
-  // ---- Vector search backend ----
+  // 4) Vector search
   try {
     if ($server->class === 'pinecone') {
-      $vector_client = new PineconeVectorClient();
+      $vector_client = new SearchApiAiPineconeVectorClient($server->options);
       $query_options = [
         'vector'           => $embedding_vector,
         'top_k'            => (int) ($chat_config['top_k'] ?? 8),
@@ -140,225 +219,185 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
         'include_metadata' => TRUE,
       ];
       $vector_results = $vector_client->query($query_options);
-    }
-    elseif ($server->class === 'milvus') {
+    } else {
       $milvus_settings = is_array($server->options) ? $server->options : [];
-      $vector_client = new MilvusVectorClient($milvus_settings);
-      $outputFields = [
-        'content',
-        'entity_id',
-        'entity_type',
-        'field_name',
-        'field_delta',
-        'bundle',
-        'backdrop_entity_id',
-        'backdrop_long_id',
-        'nid'
-      ];
+      $vector_client = new SearchApiAiMilvusVectorClient($milvus_settings);
+      $outputFields = ['content','entity_id','entity_type','field_name','field_delta','bundle','backdrop_entity_id','backdrop_long_id','nid'];
       $database = $milvus_settings['database'] ?? 'default';
-      $top_k = (int) ($chat_config['top_k'] ?? 8);
-
-      $vector_results = $vector_client->search(
-        $collection,
-        $embedding_vector,
-        $top_k,
-        $outputFields,
-        $database,
-        ''
-      );
+      $top_k    = (int) ($chat_config['top_k'] ?? 8);
+      $vector_results = $vector_client->search($collection, $embedding_vector, $top_k, $outputFields, $database, '');
     }
-    else {
-      $form_state['response'] = $chat_config['error_message'];
-      return;
-    }
-  }
-  catch (Exception $e) {
+  } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
-    $form_state['response'] = $chat_config['error_message'];
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => check_plain($chat_config['error_message']),
+      'sources'  => '',
+    ];
+    $form_state['search_api_ai_stream_last'] = TRUE;
+    $form_state['rebuild'] = TRUE;
     return;
   }
 
-  // ---- Process matches: Chunk by chunk context with real links ----
-  $score_threshold = (float) ($chat_config['score_threshold'] ?? 0.5);
-  $fact_chunks = [];
+  // 5) Build CONTEXT with title anchors (class="kb-source")
+  $score_threshold   = (float) ($chat_config['score_threshold'] ?? 0.5);
+  $context_snippets  = [];   // for LLM, includes the anchor with title
+  $context_anchors   = [];   // anchors we provided in context (for fallback)
+
   foreach ($vector_results['matches'] ?? $vector_results as $match) {
-    // Compute a "score" for either backend:
-    if (isset($match['score'])) {
-      $score = $match['score'];
-    }
-    elseif (isset($match['distance'])) {
-      $score = $match['distance'];
-    }
-    else {
-      $score = 0;
-    }
-    if ($score < $score_threshold) {
-      continue;
-    }
-    $entity_type = NULL;
-    $entity_id = NULL;
-    if (!empty($match['nid'])) {
-      $entity_type = 'node';
-      $entity_id = $match['nid'];
-    }
-    elseif (!empty($match['backdrop_entity_id']) && preg_match('/^entity:([a-z_]+)\/(\d+)/', $match['backdrop_entity_id'], $matches)) {
-      $entity_type = $matches[1];
-      $entity_id = $matches[2];
-    }
-    elseif (!empty($match['entity_type']) && !empty($match['entity_id'])) {
-      $entity_type = $match['entity_type'];
-      $entity_id = $match['entity_id'];
-    }
-    elseif (!empty($match['id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $matches)) {
-      $entity_type = $matches[1];
-      $entity_id = $matches[2];
-    }
+    $score = isset($match['score']) ? $match['score'] : (isset($match['distance']) ? $match['distance'] : 0);
+    if ($score < $score_threshold) continue;
+
+    $entity_type = NULL; $entity_id = NULL;
+    if (!empty($match['nid'])) { $entity_type = 'node'; $entity_id = $match['nid']; }
+    elseif (!empty($match['backdrop_entity_id']) && preg_match('/^entity:([a-z_]+)\/(\d+)/', $match['backdrop_entity_id'], $m)) { $entity_type = $m[1]; $entity_id = $m[2]; }
+    elseif (!empty($match['entity_type']) && !empty($match['entity_id'])) { $entity_type = $match['entity_type']; $entity_id = $match['entity_id']; }
+    elseif (!empty($match['id']) && preg_match('/^entity:([^\/]+)\/(\d+):/', $match['id'], $m)) { $entity_type = $m[1]; $entity_id = $m[2]; }
+
     if ($entity_type && $entity_id) {
       $entity = entity_load($entity_type, $entity_id);
       if ($entity && !empty($entity->nid)) {
-        $title = check_plain($entity->label());
-        $url = url("node/{$entity->nid}");
-        $snippet = check_plain(
-          substr($match['metadata']['content'] ?? $match['content'] ?? '', 0, 500)
-        );
-        // Each fact chunk is a snippet with a real, inline source link.
-        $fact_chunks[] = $snippet . " <a href='$url'>Source</a>";
+        $url   = url("node/{$entity->nid}");
+        $title_raw = method_exists($entity, 'label') ? $entity->label() : (!empty($entity->title) ? $entity->title : 'Untitled');
+        $title = check_plain($title_raw);
+        $snippet = check_plain(substr($match['metadata']['content'] ?? $match['content'] ?? '', 0, 500));
+
+        // Anchor with the NODE TITLE as link text and a stable class for extraction.
+        $anchor = "<a href='{$url}' class='kb-source'>{$title}</a>";
+
+        // Provide the snippet then the anchor, so model can copy the exact tag.
+        $context_snippets[] = "{$snippet} {$anchor}";
+        $context_anchors[]  = $anchor;
       }
     }
   }
 
-  // ---- Build context as chunked facts ----
-  $context = '';
-  if (!empty($fact_chunks)) {
-    $context = implode("\n\n", $fact_chunks);
+  if (empty($context_snippets)) {
+    $no_msg = !empty($chat_config['no_results_message'])
+      ? $chat_config['no_results_message']
+      : "Sorry, I couldn't find what you are looking for.";
+    $no_msg = html_entity_decode($no_msg, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => $no_msg,
+      'sources'  => '',
+    ];
+    $form_state['search_api_ai_stream_last'] = TRUE;
+    $form_state['rebuild'] = TRUE;
+    return;
   }
 
-  // Allow admin to override the system prompt from config.
+  // 6) Messages (system / assistant seed / user)
+  // Use only the configured system message for anchor instructions
   $system_prompt = trim($chat_config['chat_system_role'] ?? '');
 
+  $messages = [['role' => 'system', 'content' => $system_prompt]];
 
-  // ---- Build messages for the LLM ----
-  $messages = [
-    ['role' => 'system', 'content' => $system_prompt],
-    ['role' => 'user', 'content' => "Question: $user_query\n\nContext:\n$context"],
-  ];
+  // Assistant seed: inject [context] (the snippets include the title anchors)
+  $assistant_message_template = $chat_config['assistant_message'] ?? '';
+  if ($assistant_message_template === '') {
+    $assistant_message_template = "Context:\n[context]\n\nUse only this information when answering.";
+  }
+  $assistant_seed = str_replace('[context]', implode("\n\n", $context_snippets), $assistant_message_template);
+  $messages[] = ['role' => 'assistant', 'content' => $assistant_seed];
 
-  // ---- Ask OpenAI ----
+  // (We do NOT replay past assistant answers to avoid amplifying errors.)
+
+  // User message
+  $user_message_template = $chat_config['user_message'] ?? 'Question: [user-prompt]';
+  $user_message = str_replace('[user-prompt]', $user_query, $user_message_template);
+  $messages[] = ['role' => 'user', 'content' => $user_message];
+
+  // 7) LLM call
   try {
     $ai_response = $openai->chat(
       $chat_model,
       $messages,
-      (float) ($chat_config['temperature'] ?? 0.4),
+      (float) ($chat_config['temperature'] ?? 0.3), // keep conservative
       (int) ($chat_config['max_tokens'] ?? 1024)
     );
 
-    $ai_response = preg_replace(
-      '/((?:.*?)(<a\s+href=[^>]+>Source<\/a>)(\.?))(\s|$)/i',
-      '<p>$1</p>',
-      $ai_response
+    // 8) Extract any kb-source anchors the model copied, then strip them for streaming text
+    preg_match_all('/<a\b[^>]*class=["\']kb-source["\'][^>]*>.*?<\/a>/i', $ai_response, $m_used);
+    $used_anchors = !empty($m_used[0]) ? array_unique($m_used[0]) : [];
+
+    // 8a) Remove kb-source anchors from the main body
+    $main_html = preg_replace('/<a\b[^>]*class=["\']kb-source["\'][^>]*>.*?<\/a>/i', '', $ai_response);
+
+    // 8b) For all other anchors, if absolute (http/https), replace with the href so it remains as visible text
+    $main_html = preg_replace_callback(
+      '/<a\b[^>]*href=["\'](https?:\/\/[^"\']+)["\'][^>]*>.*?<\/a>/i',
+      function ($m) { return $m[1]; },
+      $main_html
     );
 
-    // Remove double periods or stray periods before paragraphs
-    $ai_response = preg_replace('/\.\./', '.', $ai_response);
-    $ai_response = preg_replace('/\.(?=<p>)/', '', $ai_response);
+    // 8c) Now strip any remaining tags and decode entities -> yields stream-safe text that still contains absolute URLs
+    $main_text = trim(html_entity_decode(strip_tags($main_html), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
 
-    $form_state['response'] = $ai_response;
+    // Build sources block (unchanged)
+    $sources_html = '';
+    if (!empty($used_anchors)) {
+      foreach ($used_anchors as $anchor) {
+        $sources_html .= '<br>' . $anchor;
+      }
+    }
+
+    // 9) Append to transcript (stream last turn; then the anchors reveal after stream via JS)
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => $main_text,
+      'sources'  => $sources_html,
+    ];
+
+    $form_state['search_api_ai_stream_last'] = TRUE;
     $form_state['rebuild'] = TRUE;
-    $form_state['input']['query'] = '';
+    $form_state['input']['query']  = '';
     $form_state['values']['query'] = '';
 
-    watchdog(
-      'search_api_ai_simple_chatbot',
-      'AI Response: @response',
-      ['@response' => $ai_response]
-    );
+    watchdog('search_api_ai_simple_chatbot', 'AI Response: @response', ['@response' => $ai_response]);
   }
   catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
-    $form_state['response'] = $chat_config['error_message'];
+    $_SESSION['search_api_ai_chat_history'][] = [
+      'question' => $user_query,
+      'answer'   => check_plain($chat_config['error_message']),
+      'sources'  => '',
+    ];
+    $form_state['search_api_ai_stream_last'] = TRUE;
+    $form_state['rebuild'] = TRUE;
   }
 }
 
-
-
-function search_api_ai_simple_chatbot_get_query_vectors(
-  $index,
-  $user_query,
-  $chat_config,
-  &$form_state
-) {
-  // Load the server.
+/**
+ * Optional helper used elsewhere (kept for compatibility).
+ */
+function search_api_ai_simple_chatbot_get_query_vectors($index, $user_query, $chat_config, &$form_state) {
   $servers = entity_load_multiple('search_api_server');
   $server = NULL;
   foreach ($servers as $s) {
-    if ($s->machine_name === $index->server) {
-      $server = $s;
-      break;
-    }
+    if ($s->machine_name === $index->server) { $server = $s; break; }
   }
-
   if (!$server) {
-    watchdog(
-      'search_api_ai_simple_chatbot',
-      'No server found for index.',
-      [],
-      WATCHDOG_ERROR
-    );
-    $form_state['response'] = $chat_config['error_message'];
+    watchdog('search_api_ai_simple_chatbot', 'No server found for index.', [], WATCHDOG_ERROR);
     return NULL;
   }
 
-  // Use PineconeService to get namespace.
   $pinecone_service = new PineconeService($server);
   $namespace = trim($pinecone_service->getNamespace($index));
-  if (strpos($namespace, ':') === 0) {
-    $namespace = substr($namespace, 1);
-  }
+  if (strpos($namespace, ':') === 0) $namespace = substr($namespace, 1);
 
-  // Generate embedding from OpenAI.
   try {
     $api_key_name = config_get('openai.settings', 'api_key');
-    $api_key = key_get_key_value($api_key_name);
-    $model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
-
-    $openai = new OpenAIApi($api_key);
-    $embedding = $openai->embedding($user_query, $model);
-    if (empty($embedding)) {
-      watchdog(
-        'search_api_ai_simple_chatbot',
-        'Failed to generate embedding.',
-        [],
-        WATCHDOG_ERROR
-      );
-      $form_state['response'] = $chat_config['error_message'];
-      return NULL;
-    }
-  }
-  catch (Exception $e) {
+    $api_key      = key_get_key_value($api_key_name);
+    $model        = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
+    $openai       = new OpenAIApi($api_key);
+    $embedding    = $openai->embedding($user_query, $model);
+    if (empty($embedding)) return NULL;
+  } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
-    $form_state['response'] = $chat_config['error_message'];
     return NULL;
   }
 
-  // Apply view-based filter if needed.
-  $filter_ids = [];
-  if (!empty($chat_config['view'])) {
-    $view = views_get_view($chat_config['view']);
-    if ($view) {
-      $view->execute();
-      foreach ($view->result as $row) {
-        if (!empty($row->_entity)) {
-          $entity = $row->_entity;
-          $langcode = method_exists($entity, 'language') ? $entity->language(
-          )->langcode : LANGUAGE_NONE;
-          $filter_ids[]
-            = "entity:{$entity->entityType()}/{$entity->id()}:{$langcode}";
-        }
-      }
-    }
-  }
-
-  // Build query options.
   $options = [
     'vector'           => $embedding,
     'top_k'            => (int) ($chat_config['top_k'] ?? 8),
@@ -366,26 +405,23 @@ function search_api_ai_simple_chatbot_get_query_vectors(
     'include_metadata' => TRUE,
   ];
 
-  if (!empty($filter_ids)) {
-    $options['filter'] = ['item_id' => ['$in' => $filter_ids]];
-  }
-
-  // Query Pinecone directly.
   try {
-    $pinecone = new PineconeVectorClient();
-    $result = $pinecone->query($options);
+    $pinecone = new SearchApiAiPineconeVectorClient($server->options);
+    $result   = $pinecone->query($options);
     return $result['matches'] ?? [];
-  }
-  catch (Exception $e) {
+  } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
-    $form_state['response'] = $chat_config['error_message'];
     return NULL;
   }
 }
 
+/** -----------------------
+ * Block API: info/config/save/view
+ * ---------------------- */
+
 function search_api_ai_simple_chatbot_block_info() {
   return [
-    'search_api_ai_chat_form' => [ // delta = search_api_ai_chat_form
+    'search_api_ai_chat_form' => [
       'info'  => t('Search API AI: Simple Chatbot'),
       'cache' => BACKDROP_NO_CACHE,
     ],
@@ -397,113 +433,73 @@ function search_api_ai_simple_chatbot_block_configure($delta = '') {
 
   $openai_config = config('openai.settings');
   $apiKey = key_get_key_value($openai_config->get('api_key'));
-
   if (empty($apiKey)) {
-    form_set_error(
-      '',
-      t('API key is not set. Please configure the API key in OpenAI settings.')
-    );
+    form_set_error('', t('API key is not set. Please configure the API key in OpenAI settings.'));
     return $form;
   }
 
   $api = new OpenAIApi($apiKey);
 
   if ($delta === 'search_api_ai_chat_form') {
-    $chat_config = config_get(
-      'search_api_ai_simple_chatbot.settings',
-      'chat_config'
-    ) ?: [];
+    $chat_config = config_get('search_api_ai_simple_chatbot.settings', 'chat_config') ?: [];
 
     $form['custom_title'] = [
       '#type'          => 'textfield',
       '#title'         => t('Chat block title'),
       '#default_value' => $chat_config['custom_title'] ?? '',
-      '#description'   => t(
-        'This title appears above the chat form. Leave empty for no title.'
-      ),
+      '#description'   => t('Appears above the chat form. Leave empty for no title.'),
     ];
 
     $form['index'] = [
       '#type'          => 'select',
       '#title'         => t('Index'),
-      '#description'   => t(
-        'Select the index for the embeddings store.'
-      ),
+      '#description'   => t('Select the index for the embeddings store.'),
       '#options'       => [],
       '#default_value' => $chat_config['index'] ?? '',
     ];
 
-    // Load all indexes and servers at once.
+    // Load all indexes and servers.
     $indexes = entity_load_multiple('search_api_index');
     $servers = entity_load_multiple('search_api_server');
 
-    // Map Pinecone indexes.
     foreach ($indexes as $index) {
-      if (empty($index->server)) {
-        continue;
-      }
-
-      // Match the index's assigned server to the server entities.
+      if (empty($index->server)) continue;
       $server = NULL;
       foreach ($servers as $s) {
-        if ($s->machine_name === $index->server) {
-          $server = $s;
-          break;
-        }
+        if ($s->machine_name === $index->server) { $server = $s; break; }
       }
-
-      // Add Pinecone and Milvus backends
-      if ($server && isset($server->class)
-        && ($server->class === 'pinecone' || $server->class === 'milvus')
-      ) {
+      if ($server && isset($server->class) && ($server->class === 'pinecone' || $server->class === 'milvus')) {
         $form['index']['#options'][$index->machine_name] = $index->name;
       }
     }
-
-    // Handle the case where no options were found.
     if (empty($form['index']['#options'])) {
-      backdrop_set_message(
-        t('No valid Pinecone search indexes found.'),
-        'warning'
-      );
+      backdrop_set_message(t('No valid vector search indexes found.'), 'warning');
       $form['index']['#options'] = ['' => t('- No indexes available -')];
     }
 
     $form['view'] = [
       '#type'          => 'select',
       '#title'         => t('View'),
-      '#description'   => t(
-        'Optionally, select the View to restrict results to.'
-      ),
-      '#default_value' => is_array($chat_config['view']) ? ''
-        : ($chat_config['view'] ?? ''),
+      '#description'   => t('Optionally restrict results to a View.'),
+      '#default_value' => is_array($chat_config['view']) ? '' : ($chat_config['view'] ?? ''),
       '#empty_option'  => t('- None -'),
       '#empty_value'   => '',
       '#sort_options'  => TRUE,
     ];
-
     $view_configs = config_get_names_with_prefix('views.view.');
     foreach ($view_configs as $config_name) {
       $view_config = config($config_name);
       $view_name = str_replace('views.view.', '', $config_name);
-      $form['view']['#options'][$view_name] = $view_config->get('name') ??
-        $view_name;
+      $form['view']['#options'][$view_name] = $view_config->get('name') ?? $view_name;
     }
 
     $form['entity_types'] = [
       '#type'          => 'select',
       '#title'         => t('Entity types'),
       '#description'   => t('Select the entity types to include in search.'),
-      '#options'       => array_map(function($info) {
-        return $info['label'];
-      }, entity_get_info()),
+      '#options'       => array_map(function($info) { return $info['label']; }, entity_get_info()),
       '#multiple'      => TRUE,
-      '#default_value' => is_array($chat_config['entity_types'])
-        ? $chat_config['entity_types']
-        : (!empty($chat_config['entity_types']) ? explode(
-          ',',
-          $chat_config['entity_types']
-        ) : []),
+      '#default_value' => is_array($chat_config['entity_types']) ? $chat_config['entity_types'] : (!empty($chat_config['entity_types']) ? explode(',', $chat_config['entity_types']) : []),
       '#required'      => TRUE,
     ];
 
@@ -511,27 +507,16 @@ function search_api_ai_simple_chatbot_block_configure($delta = '') {
       '#type'          => 'textfield',
       '#title'         => t('No results message'),
       '#default_value' => $chat_config['no_results_message'] ?? '',
-      '#description'   => t(
-        'The error message to show when no vector matches are found.'
-      ),
     ];
-
     $form['error_message'] = [
       '#type'          => 'textfield',
       '#title'         => t('Error message'),
       '#default_value' => $chat_config['error_message'] ?? '',
-      '#description'   => t(
-        'The error message to show when an API error occurs.'
-      ),
     ];
-
     $form['no_response_message'] = [
       '#type'          => 'textfield',
       '#title'         => t('No response message'),
       '#default_value' => $chat_config['no_response_message'] ?? '',
-      '#description'   => t(
-        'The error message to show when no response is received but no error occurs.'
-      ),
     ];
 
     $form['chat_config'] = [
@@ -541,7 +526,6 @@ function search_api_ai_simple_chatbot_block_configure($delta = '') {
       '#collapsed'   => TRUE,
     ];
 
-    // Get models from API service.
     $models = $api->filterModels(['gpt']);
 
     $form['chat_config']['chat_model'] = [
@@ -549,111 +533,78 @@ function search_api_ai_simple_chatbot_block_configure($delta = '') {
       '#title'         => t('Chat model'),
       '#options'       => $models,
       '#default_value' => $chat_config['chat_model'] ?? 'gpt-4o',
-      '#description'   => t(
-        'Select which model to use to analyze text. See the <a href=":link">model overview</a> for details about each model.',
-        ['@link' => 'https://platform.openai.com/docs/models/gpt-3.5']
-      ),
     ];
 
     $form['chat_config']['temperature'] = [
       '#type'          => 'textfield',
       '#title'         => t('Temperature'),
       '#default_value' => $chat_config['temperature'] ?? 0.4,
-      '#description'   => t(
-        'What sampling temperature to use, between 0 and 2. Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic.'
-      ),
+      '#description'   => t('0–2; higher is more random.'),
     ];
 
     $form['chat_config']['max_tokens'] = [
       '#type'          => 'textfield',
       '#title'         => t('Max tokens'),
       '#default_value' => $chat_config['max_tokens'] ?? 1024,
-      '#description'   => t(
-        'The maximum number of tokens to generate in the completion. The token count of your prompt plus max_tokens cannot exceed the model\'s context length. Most models have a context length of 2048 tokens (except for the newest models, which support 4096).'
-      ),
     ];
 
     $form['chat_config']['chat_system_role'] = [
-      '#type'                => 'textarea',
-      '#title'               => t('System message'),
-      '#default_value'       => $chat_config['chat_system_role'] ?? '',
-      '#description'         => t(
-        'This is the first message sent to the LLM and sets the overall tone of how the LLM will respond. Note LLMS prioritize User messages over System messages.'
-      ),
-      '#description_display' => 'after',
+      '#type'          => 'textarea',
+      '#title'         => t('System message'),
+      '#default_value' => $chat_config['chat_system_role'] ?? '',
     ];
 
     $form['chat_config']['assistant_message'] = [
-      '#type'                => 'textarea',
-      '#title'               => t('Assistant message'),
-      '#default_value'       => $chat_config['assistant_message'] ?? '',
-      '#description'         => t(
-        'Use the token [context] for providing the snippets. The assistant message is for responses created by the LLM. Here we are pretending the LLM found the context provided by the vector search and making it remind itself to only use the context provided. It is unlikely site admins will need to change this.'
-      ),
-      '#description_display' => 'after',
+      '#type'          => 'textarea',
+      '#title'         => t('Assistant message'),
+      '#default_value' => $chat_config['assistant_message'] ?? '',
+      '#description'   => t('Use [context] to include retrieved snippets.'),
     ];
 
     $form['chat_config']['user_message'] = [
-      '#type'                => 'textarea',
-      '#title'               => t('User message'),
-      '#default_value'       => $chat_config['user_message'] ?? '',
-      '#description'         => t(
-        'The token [user-prompt] is what the User has typed into the form. This setting allows you to add words around your user message to make the LLM reply the way you want.'
-      ),
-      '#description_display' => 'after',
+      '#type'          => 'textarea',
+      '#title'         => t('User message'),
+      '#default_value' => $chat_config['user_message'] ?? '',
+      '#description'   => t('Use [user-prompt] for the user input.'),
     ];
 
-    // ✅ Nested Advanced Fieldset
+    // Advanced.
     $form['chat_config']['advanced'] = [
       '#type'        => 'fieldset',
       '#title'       => t('Advanced'),
-      '#collapsible' => TRUE,
       '#collapsed'   => TRUE,
+      '#collapsible' => TRUE,
     ];
 
     $form['chat_config']['advanced']['top_k'] = [
       '#type'          => 'textfield',
       '#title'         => t('Top K'),
       '#default_value' => $chat_config['top_k'] ?? 4,
-      '#description'   => t(
-        'The number of results to return for a vector query.'
-      ),
     ];
 
     $form['chat_config']['advanced']['score_threshold'] = [
       '#type'          => 'textfield',
       '#title'         => t('Score threshold'),
       '#default_value' => $chat_config['score_threshold'] ?? 0.5,
-      '#description'   => t(
-        'The threshold vector embeddings must meet to be considered relevant. Must be between 0 and 1. A threshold of 0 would mean everything should be considered relevant and a threshold of 1 would mean they have to be the same to be considered relevant.'
-      ),
     ];
 
     $form['chat_config']['advanced']['max_length'] = [
       '#type'          => 'textfield',
       '#title'         => t('Maximum query length'),
       '#default_value' => $chat_config['max_length'] ?? 512,
-      '#description'   => t(
-        'The maximum length of the query used to create embeddings.'
-      ),
     ];
 
     $form['chat_config']['advanced']['embedding_model'] = [
       '#type'          => 'select',
       '#title'         => t('Embedding model'),
       '#options'       => $api->filterModels(['text-embedding-']),
-      '#default_value' => $chat_config['embedding_model'] ??
-        'text-embedding-ada-002',
-      '#description'   => t('The model to use to analyse text.'),
+      '#default_value' => $chat_config['embedding_model'] ?? 'text-embedding-ada-002',
     ];
 
     $form['chat_config']['advanced']['debug'] = [
       '#type'          => 'checkbox',
       '#title'         => t('Debug mode'),
       '#default_value' => !empty($chat_config['debug']),
-      '#description'   => t(
-        'Display various chat settings on the front end for debugging/demo purposes.'
-      ),
     ];
   }
 
@@ -681,7 +632,6 @@ function search_api_ai_simple_chatbot_block_save($delta = '', $edit = []) {
       'chat_system_role'    => $edit['chat_config']['chat_system_role'],
       'assistant_message'   => $edit['chat_config']['assistant_message'],
       'user_message'        => $edit['chat_config']['user_message'],
-
       // advanced nested values
       'top_k'               => $edit['chat_config']['advanced']['top_k'],
       'score_threshold'     => $edit['chat_config']['advanced']['score_threshold'],
@@ -690,79 +640,40 @@ function search_api_ai_simple_chatbot_block_save($delta = '', $edit = []) {
       'debug'               => !empty($edit['chat_config']['advanced']['debug']),
     ];
 
-    config_set(
-      'search_api_ai_simple_chatbot.settings',
-      'chat_config',
-      $chat_config
-    );
+    config_set('search_api_ai_simple_chatbot.settings', 'chat_config', $chat_config);
   }
 }
 
 /**
- * Implements hook_block_view().
+ * Block view (includes topbar with toggle + Clear History, then the form).
  */
 function search_api_ai_simple_chatbot_block_view($delta = '') {
   if ($delta === 'search_api_ai_chat_form') {
     $block_id = 'search_api_ai_chat_form';
-    $chat_config = config_get(
-      'search_api_ai_simple_chatbot.settings',
-      'chat_config'
-    ) ?: [];
-    $form = backdrop_get_form(
-      'search_api_ai_simple_chatbot_form',
-      $block_id,
-      $chat_config
-    );
+    $chat_config = config_get('search_api_ai_simple_chatbot.settings', 'chat_config') ?: [];
+    $form = backdrop_get_form('search_api_ai_simple_chatbot_form', $block_id, $chat_config);
 
-    $title = !empty($chat_config['custom_title']) ? check_plain(
-      $chat_config['custom_title']
-    ) : NULL;
+    $title = !empty($chat_config['custom_title']) ? check_plain($chat_config['custom_title']) : NULL;
 
     $content = [];
-
-    // Wrapper + toggle button stays visible at all times.
     $content[] = [
-      '#markup' => '<div class="chatbot-wrapper">
-        <button class="chat-toggle-button" type="button">💬 Open Chat</button>
-        <div class="chatbot-inner">', // This part is what gets toggled
+      '#markup' => '<div class="chatbot-wrapper">'
+        .   '<div class="chatbot-topbar">'
+        .     '<button class="chat-toggle-button btn btn-accent1" type="button">💬 Open Chat</button>'
+        .     '<button class="chat-form-clear-history btn btn-light" type="button" style="margin-left:10px;">'
+        .       t('Clear History')
+        .     '</button>'
+        .   '</div>'
+        .   '<div class="chatbot-inner">',
     ];
 
-    // Title (optional)
     if (!empty($title)) {
-      $content[] = [
-        '#markup' => '<h2 class="block-title">' . $title . '</h2>',
-      ];
+      $content[] = ['#markup' => '<h2 class="block-title">' . $title . '</h2>'];
     }
 
-    // The form itself
     $content[] = $form;
+    $content[] = ['#markup' => '</div></div>'];
 
-    // Close inner and outer divs
-    $content[] = [
-      '#markup' => '</div></div>',
-    ];
-
-    return [
-      'subject' => NULL,
-      'content' => $content,
-    ];
+    return ['subject' => NULL, 'content' => $content];
   }
 }
-
-function search_api_ai_simple_chatbot_form_layout_block_configure_form_alter(
-  &$form,
-  &$form_state,
-  $form_id
-) {
-  // Target only our block.
-  $block = $form_state['block'];
-
-  if ($block->module === 'search_api_ai_simple_chatbot'
-    && $block->delta === 'search_api_ai_chat_form'
-  ) {
-    // Remove "Block title type" and hide the core title field completely.
-    unset($form['title_display']);
-    $form['title']['#access'] = FALSE;
-  }
-}
-

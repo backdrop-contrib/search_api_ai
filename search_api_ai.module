@@ -1,5 +1,9 @@
 <?php
 
+/**
+ * @file
+ * Search API AI – Backdrop CMS integration.
+ */
 
 /**
  * Implements hook_config_info().
@@ -24,12 +28,12 @@ function search_api_ai_autoload_info() {
     'EmbeddingEngineStatic' => 'includes/EmbeddingEngineStatic.inc',
     'EmbeddingEnginePluginBase' => 'includes/EmbeddingEnginePluginBase.inc',
     'EmbeddingEngineInterface' => 'includes/EmbeddingEngineInterface.inc',
-    'SearchApiAiBackendInterface' => 'includes/SearchApiAiBackendInterface.inc',
+    'SearchApiAiBackendInterface' => 'includes/SearchApiBackendInterface.inc',
     'TextChunker' => 'includes/TextChunker.inc',
-    'EmbeddingEngine' => 'includes/EmbeddingEngine.inc',
     'SearchApiAiBackendPluginBase' => 'includes/SearchApiAiBackendPluginBase.inc',
     'SearchApiAiBackend' => 'includes/SearchApiAiBackend.inc',
     'DatabaseBoostByAiSearch' => 'includes/DatabaseBoostByAiSearch.inc',
+    'SearchApiAiVectorClientBase' => 'includes/SearchApiAiVectorClientBase.inc',
   );
 }
 
@@ -41,14 +45,8 @@ function search_api_ai_embedding_engine_info() {
     'openai' => [
       'label' => t('OpenAI Embeddings'),
       'class' => 'OpenAiEmbeddingsDefault',
-    ],
-    'pinecone' => [
-      'label' => t('Pinecone Vector Store'),
-      'class' => 'PineconeVectorClient',
-    ],
-    'milvus' => [
-      'label' => t('Milvus Vector Store'),
-      'class' => 'MilvusVectorClient',
+      'file'  => 'includes/OpenAiEmbeddingsDefault.inc',
+      'module'=> 'search_api_ai',
     ],
   ];
 }
@@ -60,28 +58,20 @@ function search_api_ai_search_api_data_type_info() {
   return array(
     'llm_vector_embedding' => array(
       'name' => t('Embeddings'),
-      'fallback' => 'string', // Falls back to string if unsupported by the backend.
+      'fallback' => 'string',
       'conversion callback' => 'search_api_ai_convert_embedding',
     ),
   );
 }
 
+/**
+ * Default embedding dimension when nothing else is available.
+ */
 function search_api_ai_get_embedding_dimension() {
-  $search_api_ai_config = config('search_api_ai.settings');
-
-  $embedding_config = $search_api_ai_config->get('embeddings_engine_configuration') ?? [];
-
-  // Ensure we are correctly retrieving the dimension
-  watchdog('search_api_ai', '🔍 Retrieved embedding dimension from config: @dimension', [
-    '@dimension' => isset($embedding_config['dimension']) ? $embedding_config['dimension'] : 'MISSING',
-  ], WATCHDOG_DEBUG);
-
-  return (int) ($embedding_config['dimension'] ?? 1536);
+  return 1536;
 }
 
-
-function search_api_ai_convert_embedding($value, $original_type, $type, array
-$embedding_settings, $field_name = 'unknown_field') {
+function search_api_ai_convert_embedding($value, $original_type, $type, array $embedding_settings, $field_name = 'unknown_field', $server = NULL) {
   if ($type !== 'llm_vector_embedding' || !is_string($value)) {
     watchdog('search_api_ai', "❌ Bad call: type=$type, is_string=" . (is_string($value) ? 'yes' : 'no'), [], WATCHDOG_WARNING);
     return [];
@@ -93,10 +83,16 @@ $embedding_settings, $field_name = 'unknown_field') {
     return [];
   }
 
-  $chunk_size    = 500;
-  $chunk_overlap = 100;
+  // Prefer server-level chunking, otherwise index-provided.
+  if ($server) {
+    $embedding_strategy = $server->options['embedding_strategy'] ?? [];
+  }
+  else {
+    $embedding_strategy = $embedding_settings['embedding_strategy'] ?? [];
+  }
+  $chunk_size    = !empty($embedding_strategy['chunk_size']) ? (int) $embedding_strategy['chunk_size'] : 500;
+  $chunk_overlap = !empty($embedding_strategy['chunk_overlap']) ? (int) $embedding_strategy['chunk_overlap'] : 100;
   $chunks = TextChunker::chunkText($prepared_text, $chunk_size, $chunk_overlap);
-  //dpm($chunks);
 
   $config = search_api_ai_get_embedding_engine_config($embedding_settings);
   $model = $config['engine'];
@@ -112,20 +108,19 @@ $embedding_settings, $field_name = 'unknown_field') {
   $api_key       = key_get_key_value($api_key_name);
   $openai_api    = new OpenAIApi($api_key);
 
-  // Instead of just $vectors[], build an array of ['vector' => ..., 'chunk' => ...]
   $chunked_vectors = [];
   foreach ($chunks as $i => $chunk) {
     $chunk_clean = StringHelper::prepareText($chunk);
     if (empty($chunk_clean)) continue;
     try {
       $vector = $openai_api->embedding($chunk_clean, $model);
-      if (!is_array($vector) || count($vector) !== (int)$expected_dimension) {
+      if (!is_array($vector) || count($vector) !== (int) $expected_dimension) {
         watchdog('search_api_ai', "❌ Invalid chunk vector size for $field_name: Expected $expected_dimension, got " . (is_array($vector) ? count($vector) : gettype($vector)), [], WATCHDOG_ERROR);
         continue;
       }
       $chunked_vectors[] = [
         'vector' => $vector,
-        'chunk'  => $chunk, // keep original, not cleaned, so you can display!
+        'chunk'  => $chunk,
       ];
     } catch (Exception $e) {
       watchdog('search_api_ai', "❌ OpenAI API error for $field_name: " . $e->getMessage(), [], WATCHDOG_ERROR);
@@ -137,14 +132,8 @@ $embedding_settings, $field_name = 'unknown_field') {
   return $chunked_vectors;
 }
 
-
 /**
  * Get embedding model and dimension from Search API AI index options.
- *
- * @param array $embedding_settings
- *   The index-specific embedding_settings array.
- * @return array
- *   Array with 'engine' and 'dimension'.
  */
 function search_api_ai_get_embedding_engine_config(array $embedding_settings) {
   if (empty($embedding_settings['embeddings_engine'])) {
@@ -153,7 +142,7 @@ function search_api_ai_get_embedding_engine_config(array $embedding_settings) {
   $model = $embedding_settings['embeddings_engine'];
   $dimension = isset($embedding_settings['embeddings_engine_configuration']['dimension'])
     ? (int) $embedding_settings['embeddings_engine_configuration']['dimension']
-    : 1536; // Or maybe throw if you want to enforce explicit config
+    : 1536;
 
   return [
     'engine' => $model,
@@ -161,73 +150,146 @@ function search_api_ai_get_embedding_engine_config(array $embedding_settings) {
   ];
 }
 
-
 /**
  * Implements hook_init().
- *
- * Initializes the plugin manager and stores it globally.
  */
 function search_api_ai_init() {
-  // Instantiate the plugin manager.
   $plugin_manager = new EmbeddingEnginePluginManager();
-
-  // Instantiate the static helper class, passing the plugin manager.
   $embedding_engine_static = new EmbeddingEngineStatic($plugin_manager);
-
-  // Store it in a global variable if needed.
   $GLOBALS['search_api_ai']['embedding_engine_static'] = $embedding_engine_static;
-}
-
-
-/**
- * Implements hook_menu().
- */
-function search_api_ai_menu() {
-  $items = array();
-
-  $items['admin/config/search-api-ai/test'] = array(
-    'title' => 'Embedding Engine Test Form',
-    'description' => 'A test form for embedding engine configuration.',
-    'page callback' => 'search_api_ai_embedding_engine_test_form',
-    'access arguments' => array('administer site configuration'),
-    'type' => MENU_NORMAL_ITEM,
-    'parent' => 'admin/config',
-  );
-
-  // Route for the embedding engine settings form.
-  /*$items['admin/config/search-api-ai/embedding-engine'] = array(
-    'title' => 'Embedding Engine Settings',
-    'page callback' => 'backdrop_get_form',
-    // Again, convert the Drupal form class to a Backdrop form function.
-    'page arguments' => array('search_api_ai_embedding_engine_config_form'),
-    'access arguments' => array('administer site configuration'),
-  );*/
-
-  return $items;
 }
 
 /**
  * Implements hook_form_alter().
+ *
+ * Unified handler for:
+ *   - search_api_admin_add_server
+ *   - search_api_admin_server_edit
+ *   - search_api_server_edit_form (alt ID some installs use)
+ *   - search_api_admin_add_index
+ *   - search_api_admin_index_edit
  */
 function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
-  if ($form_id == 'search_api_admin_index_edit' || $form_id == 'search_api_admin_add_index') {
 
-    // Add weights to existing form elements
-    $form['name']['#weight'] = 10;
-    $form['machine_name']['#weight'] = 20;
-    $form['item_type']['#weight'] = 30;
-    $form['datasource']['#weight'] = 40;
-    $form['enabled']['#weight'] = 50;
-    $form['description']['#weight'] = 60;
-    $form['server']['#weight'] = 70;
-    $form['read_only']['#weight'] = 90;
-    $form['options']['#weight'] = 100;
-    $form['submit']['#weight'] = 110;
+  // ===== Server ADD/EDIT: place embedding_strategy INSIDE options[form] =====
+  if (in_array($form_id, ['search_api_admin_add_server', 'search_api_admin_server_edit', 'search_api_server_edit_form'], TRUE)) {
 
-    // Get $index for defaults (from edit) or load from values (AJAX/post).
-    $index = isset($form_state['index']) ? $form_state['index'] : NULL;
+    // Standardize weights for top-level bits (not strictly required).
+    if (isset($form['name']))         { $form['name']['#weight'] = 0; }
+    if (isset($form['machine_name'])) { $form['machine_name']['#weight'] = 1; }
+    if (isset($form['enabled']))      { $form['enabled']['#weight'] = 2; }
+    if (isset($form['description']))  { $form['description']['#weight'] = 3; }
+    if (isset($form['class']))        { $form['class']['#weight'] = 5; }
+    if (isset($form['options']))      { $form['options']['#weight'] = 6; }
+    if (isset($form['submit']))       { $form['submit']['#weight'] = 7; }
+
+    // Ensure the expected structure exists for add/edit:
+    if (!isset($form['options'])) {
+      $form['options'] = ['#type' => 'fieldset', '#tree' => TRUE];
+    }
+    if (!isset($form['options']['form'])) {
+      // Service classes put their config here; ensure the container exists so our fields get into options[form].
+      $form['options']['form'] = [];
+    }
+
+    // Defaults from saved server on edit or any posted values.
+    $server   = isset($form_state['server']) ? $form_state['server'] : NULL;
     $settings = [];
+    if ($server && !empty($server->options['embedding_strategy'])) {
+      $settings = $server->options['embedding_strategy'];
+    }
+    elseif (!empty($form_state['values']['options']['form']['embedding_strategy'])) {
+      $settings = $form_state['values']['options']['form']['embedding_strategy'];
+    }
 
+    // Place our fieldset *inside* options[form] so add_server_submit picks it up.
+    $form['options']['form']['embedding_strategy'] = [
+      '#type'   => 'fieldset',
+      '#title'  => t('Embedding Strategy Configuration'),
+      '#tree'   => TRUE,
+      '#weight' => 50, // after most service options
+    ];
+    $form['options']['form']['embedding_strategy']['chunk_size'] = [
+      '#type' => 'textfield',
+      '#title' => t('Maximum chunk size (tokens)'),
+      '#default_value' => $settings['chunk_size'] ?? 500,
+      '#description' => t('Maximum chunk size allowed when breaking up larger content.'),
+    ];
+    $form['options']['form']['embedding_strategy']['chunk_overlap'] = [
+      '#type' => 'textfield',
+      '#title' => t('Minimum chunk overlap (tokens)'),
+      '#default_value' => $settings['chunk_overlap'] ?? 100,
+      '#description' => t('Number of tokens to overlap between chunks.'),
+    ];
+    // After you create $form['options']['form']['embedding_strategy']...
+    $form['options']['form']['embedding_strategy']['how_to'] = [
+      '#type'        => 'fieldset',
+      '#title'       => t('How to select your chunk size'),
+      '#tree'        => TRUE,
+      '#collapsible' => TRUE,
+      '#collapsed'   => TRUE,
+      '#weight'      => 60,
+    ];
+
+    $form['options']['form']['embedding_strategy']['how_to']['body'] = [
+      '#type'   => 'item',
+      '#markup' => '
+    <p><strong>What this does:</strong> This setting determines the number of tokens in each text chunk that will be stored in the vector database. Proper configuration is crucial for optimizing search accuracy and database performance.</p>
+
+    <p><em>You should do your own research and come to your own conclusions, but here is some general AI-generated advice:</em></p>
+
+    <h3>Smaller Chunk Size (e.g., 50–100 tokens)</h3>
+    <ul>
+      <li><strong>Use cases:</strong> Highly granular search where detailed segments must be retrievable.</li>
+      <li><strong>Advantages:</strong> Increases precision; easier to find specific phrases or concepts.</li>
+      <li><strong>Disadvantages:</strong> More chunks → larger DB size and potentially more processing.</li>
+    </ul>
+
+    <h3>Larger Chunk Size (e.g., 200–500 tokens)</h3>
+    <ul>
+      <li><strong>Use cases:</strong> General search where broader segments are fine.</li>
+      <li><strong>Advantages:</strong> Fewer chunks → better storage and search throughput.</li>
+      <li><strong>Disadvantages:</strong> Lower accuracy for very specific queries.</li>
+    </ul>
+
+    <h3>Balance Between Size and Performance</h3>
+    <p>Aim for a balance that fits your content and queries. Consider the nature of the text and typical search behavior.</p>
+
+    <h3>Additional considerations</h3>
+    <ul>
+      <li><strong>Text complexity:</strong> Dense/technical text often benefits from smaller chunks.</li>
+      <li><strong>Search behavior:</strong> If users hunt for fine details, prefer smaller chunks; for broad recall, larger can work.</li>
+      <li><strong>System resources:</strong> Larger chunks reduce DB load but lower granularity—pick a size your infra handles well.</li>
+    </ul>
+  ',
+    ];
+
+
+    // Validate the two fields (values live at options][form][embedding_strategy][...]).
+    $v = &$form_state['values'];
+    $path = ['options','form','embedding_strategy'];
+    $cs = _search_api_ai_nested_value($v, array_merge($path, ['chunk_size']));
+    $co = _search_api_ai_nested_value($v, array_merge($path, ['chunk_overlap']));
+
+    // Attach a lightweight validate to guard numbers.
+    $form['#validate'][] = 'search_api_ai_form_server_embedding_strategy_validate';
+  }
+
+  // ===== Index ADD/EDIT: embedding engine lives per-index =====
+  if (in_array($form_id, ['search_api_admin_index_edit', 'search_api_admin_add_index'], TRUE)) {
+    if (isset($form['name']))         { $form['name']['#weight'] = 10; }
+    if (isset($form['machine_name'])) { $form['machine_name']['#weight'] = 20; }
+    if (isset($form['item_type']))    { $form['item_type']['#weight'] = 30; }
+    if (isset($form['datasource']))   { $form['datasource']['#weight'] = 40; }
+    if (isset($form['enabled']))      { $form['enabled']['#weight'] = 50; }
+    if (isset($form['description']))  { $form['description']['#weight'] = 60; }
+    if (isset($form['server']))       { $form['server']['#weight'] = 70; }
+    if (isset($form['read_only']))    { $form['read_only']['#weight'] = 90; }
+    if (isset($form['options']))      { $form['options']['#weight'] = 100; }
+    if (isset($form['submit']))       { $form['submit']['#weight'] = 110; }
+
+    $index    = isset($form_state['index']) ? $form_state['index'] : NULL;
+    $settings = [];
     if ($index && !empty($index->options['embedding_settings'])) {
       $settings = $index->options['embedding_settings'];
     }
@@ -238,7 +300,6 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
     $selected_engine = $settings['embeddings_engine'] ?? '';
     $dimension_value = $settings['embeddings_engine_configuration']['dimension'] ?? 768;
 
-    // Get engines.
     $all_engines = module_invoke_all('embedding_engine_info');
     $embedding_engines = array_filter($all_engines, function ($engine) {
       return isset($engine['class'])
@@ -264,29 +325,23 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
       }
     }
 
-    $servers = search_api_server_load_multiple(FALSE, array('enabled' => 1));
-    dpm($servers);
-
-    foreach ($servers as $server) {
-      $server_class = $server->class;
-      dpm($server_class);
+    // Only show when server class is Milvus or Pinecone.
+    $servers = search_api_server_load_multiple(FALSE, ['enabled' => 1]);
+    $or_groups = [];
+    foreach ($servers as $server_obj) {
+      if (in_array(strtolower($server_obj->class), ['milvus', 'pinecone'])) {
+        $or_groups[] = [
+          ':input[name="server"]' => ['value' => $server_obj->machine_name],
+        ];
+      }
     }
 
-    // Add embedding settings directly after 'server'.
     $form['embedding_settings'] = [
-      '#type' => 'fieldset',
+      '#type'  => 'fieldset',
       '#title' => t('Embedding Settings'),
-      '#weight' => 71, // Directly after server (#weight 70)
-      '#tree' => TRUE,
-      '#states' => [
-        'visible' => [
-          'select[name="server"]' => [
-            ['value' => 'pinecone'],
-            ['value' => 'milvus'],
-            ['value' => 'zilliz'],
-          ],
-        ],
-      ],
+      '#weight'=> 71,
+      '#tree'  => TRUE,
+      '#states'=> !empty($or_groups) ? ['visible' => $or_groups] : [],
     ];
 
     $form['embedding_settings']['embeddings_engine'] = [
@@ -317,153 +372,82 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
       '#description' => t('The number of dimensions for embeddings.'),
     ];
 
-    // Add AJAX to the server selection
-    $form['server']['#ajax'] = [
-      'callback' => 'search_api_ai_server_selection_callback',
-      'wrapper' => 'edit-wrapper', // Ensure this matches your form wrapper ID
-      'method' => 'replace',
-    ];
+    // Refresh embedding settings area when server changes.
+    if (isset($form['server'])) {
+      $form['server']['#ajax'] = [
+        'callback' => 'search_api_ai_server_selection_callback',
+        'wrapper' => 'edit-wrapper',
+        'method' => 'replace',
+      ];
+    }
+
+    // Persist embedding_settings into index options.
+    if (empty($form['#submit']) || !in_array('search_api_ai_embedding_settings_submit', $form['#submit'], TRUE)) {
+      $form['#submit'][] = 'search_api_ai_embedding_settings_submit';
+    }
+    if (empty($form['#after_build']) || !in_array('search_api_ai_embedding_settings_copy_for_save', $form['#after_build'], TRUE)) {
+      $form['#after_build'][] = 'search_api_ai_embedding_settings_copy_for_save';
+    }
   }
 }
 
+/**
+ * Tiny helper to fetch nested value without notices.
+ */
+function _search_api_ai_nested_value(&$array, $keys) {
+  $ref = &$array;
+  foreach ($keys as $k) {
+    if (!is_array($ref) || !array_key_exists($k, $ref)) {
+      return NULL;
+    }
+    $ref = &$ref[$k];
+  }
+  return $ref;
+}
 
 /**
- * AJAX callback for server selection.
+ * Server-side validate for embedding strategy fields.
+ * Works for both add/edit because fields live in options][form][embedding_strategy].
+ */
+function search_api_ai_form_server_embedding_strategy_validate($form, &$form_state) {
+  if (empty($form_state['values']['options']['form']['embedding_strategy'])) {
+    return;
+  }
+  $vals = $form_state['values']['options']['form']['embedding_strategy'];
+
+  if (isset($vals['chunk_size']) && (!is_numeric($vals['chunk_size']) || $vals['chunk_size'] <= 0)) {
+    form_set_error('options][form][embedding_strategy][chunk_size', t('Chunk size must be a positive number.'));
+  }
+  if (isset($vals['chunk_overlap']) && (!is_numeric($vals['chunk_overlap']) || $vals['chunk_overlap'] < 0)) {
+    form_set_error('options][form][embedding_strategy][chunk_overlap', t('Chunk overlap must be a non-negative number.'));
+  }
+}
+
+/**
+ * AJAX callback for server selection (index forms).
  */
 function search_api_ai_server_selection_callback($form, &$form_state) {
   return $form['embedding_settings'];
 }
 
 /**
- * Renders the embedding engine test form.
- *
- * @return array
- *   The renderable form array.
- */
-function search_api_ai_embedding_engine_test_form() {
-  // Load helper functions from includes.
-  module_load_include('inc', 'search_api_ai', 'includes/SearchApiAiBackend');
-
-  // Mock configuration for testing.
-  $configuration = array(
-    'embeddings_engine' => NULL,
-    'embeddings_engine_configuration' => array(
-      'dimension' => 768,
-    ),
-  );
-
-  // Initialize form and form state.
-  $form = array();
-  $form_state = array();  // Initialize form state as an array.
-
-  // Pass $form_state by reference.
-  $form = search_api_ai_engine_configuration_form($form, $form_state, $configuration);
-
-  return $form;
-}
-
-/**
- * Build the configuration form for selecting and configuring the embedding engine.
- */
-/*function search_api_ai_embedding_engine_config_form($form, &$form_state) {
-  // Load existing configuration.
-  $config = config_get('search_api_ai.settings');
-
-  $selected_engine = $form_state['values']['embeddings_engine'] ??
-    ($config['embeddings_engine'] ?? '');
-
-  // Default embedding dimension.
-  $engine_config = $config['embeddings_engine_configuration'] ?? ['dimension' => 768];
-
-  // Load available embedding engines.
-  $all_engines = module_invoke_all('embedding_engine_info');
-
-  // Filter only valid embedding engines dynamically.
-  $embedding_engines = array_filter($all_engines, function ($engine) {
-    return isset($engine['class']) && class_exists($engine['class']) && is_subclass_of($engine['class'], 'OpenAiEmbeddingsDefault');
-  });
-
-  // Populate the form options using **model name from the class**.
-  $options = [];
-  foreach ($embedding_engines as $id => $engine) {
-    $engine_class = $engine['class'];
-    if (class_exists($engine_class)) {
-      try {
-        $engine_instance = new $engine_class([], NULL);
-        $options[$id] = method_exists($engine_instance, 'getModelName') ?
-          $engine_instance->getModelName() : $id;
-      } catch (Exception $e) {
-        watchdog('search_api_ai', 'Error instantiating embedding engine @engine: @message', [
-          '@engine' => $id,
-          '@message' => $e->getMessage(),
-        ], WATCHDOG_ERROR);
-      }
-    }
-  }
-
-  // Initialize dimension with a fallback value.
-  $dimension_value = $engine_config['dimension'] ?? 768;
-
-  // Set form elements.
-  $form['embeddings_engine'] = [
-    '#type' => 'select',
-    '#title' => t('Embedding Engine'),
-    '#options' => $options,
-    '#default_value' => $selected_engine,
-    '#description' => t('Select the embedding engine to use.'),
-    '#ajax' => [
-      'callback' => 'search_api_ai_update_embedding_dimension',
-      'wrapper' => 'embedding-dimension-wrapper', // This should match the fieldset wrapper
-      'event' => 'change',
-    ],
-  ];
-
-  $form['embeddings_engine_configuration'] = [
-    '#type' => 'fieldset',
-    '#title' => t('Embedding Engine Configuration'),
-    '#prefix' => '<div id="embedding-dimension-wrapper">',
-    '#suffix' => '</div>',
-  ];
-
-  $form['embeddings_engine_configuration']['dimension'] = [
-    '#type' => 'textfield',
-    '#title' => t('Embedding Dimension'),
-    '#default_value' => $dimension_value,
-    '#description' => t('The number of dimensions for embeddings.'),
-  ];
-
-  $form['actions'] = ['#type' => 'actions'];
-  $form['actions']['submit'] = [
-    '#type' => 'submit',
-    '#value' => t('Save Configuration'),
-  ];
-
-  return $form;
-}*/
-
-/**
- * AJAX Callback to update embedding dimension dynamically.
+ * AJAX Callback to update embedding dimension dynamically (index forms).
  */
 function search_api_ai_update_embedding_dimension($form, &$form_state) {
   $selected_engine = $form_state['values']['embedding_settings']['embeddings_engine'] ?? NULL;
   $dimension_value = 768; // Default
 
-  // Load available embedding engines.
   $all_engines = module_invoke_all('embedding_engine_info');
   if ($selected_engine && isset($all_engines[$selected_engine])) {
     $engine_class = $all_engines[$selected_engine]['class'];
     if (class_exists($engine_class)) {
       try {
-        // Only the API key is needed from global config now.
         $api_key_name = config_get('openai.settings', 'api_key');
         $api_key = key_get_key_value($api_key_name);
         if (!$api_key) {
           throw new Exception('OpenAI API key is missing.');
         }
         $client = new OpenAIApi($api_key);
-
-        // Engine config is per-index, not global anymore.
-        // If you need settings, pull from $form_state or pass [].
         $engine_instance = new $engine_class([], $client);
 
         if (method_exists($engine_instance, 'getDimension')) {
@@ -482,42 +466,32 @@ function search_api_ai_update_embedding_dimension($form, &$form_state) {
   return $form['embedding_settings']['embeddings_engine_configuration'];
 }
 
-function search_api_ai_form_search_api_admin_index_edit_alter(&$form, &$form_state) {
-  $form['#submit'][] = 'search_api_ai_embedding_settings_submit';
-  $form['#after_build'][] = 'search_api_ai_embedding_settings_copy_for_save';
-}
-function search_api_ai_form_search_api_admin_add_index_alter(&$form, &$form_state) {
-  $form['#submit'][] = 'search_api_ai_embedding_settings_submit';
-  $form['#after_build'][] = 'search_api_ai_embedding_settings_copy_for_save';
-}
-
+/**
+ * After-build: copy our embedding_settings into options for persistence (index).
+ */
 function search_api_ai_embedding_settings_copy_for_save($form, &$form_state) {
-  // Copy top-level embedding_settings into options so Search API will persist it.
   if (!empty($form_state['values']['embedding_settings'])) {
     $form_state['values']['options']['embedding_settings'] = $form_state['values']['embedding_settings'];
   }
   return $form;
 }
 
+/**
+ * Submit: ensure embedding_settings end up in options (index).
+ */
 function search_api_ai_embedding_settings_submit($form, &$form_state) {
-  // Ensure again on submit (sometimes values shift during validation steps).
   if (!empty($form_state['values']['embedding_settings'])) {
     $form_state['values']['options']['embedding_settings'] = $form_state['values']['embedding_settings'];
   }
 }
 
-
-
 /**
- * Submit handler for the embedding engine configuration form.
+ * Submit handler for the legacy global engine config form (kept intact).
  */
 function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) {
-  $selected_engine = $form_state['values']['options']['embeddings_engine'] ??
-    '';
-  $engine_config = $form_state['values']['options']['embeddings_engine_configuration']
-    ?? ['dimension' => 768];
+  $selected_engine = $form_state['values']['options']['embeddings_engine'] ?? '';
+  $engine_config = $form_state['values']['options']['embeddings_engine_configuration'] ?? ['dimension' => 768];
 
-  // Load available embedding engines.
   $all_engines = module_invoke_all('embedding_engine_info');
 
   if ($selected_engine && isset($all_engines[$selected_engine])) {
@@ -525,23 +499,19 @@ function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) 
 
     if (class_exists($engine_class)) {
       try {
-        // Retrieve OpenAI API key.
         $api_key_name = config_get('openai.settings', 'api_key');
         $api_key = key_get_key_value($api_key_name);
         if (!$api_key) {
           throw new Exception('OpenAI API key is missing.');
         }
 
-        // Create OpenAI client instance.
         $client = new OpenAIApi($api_key);
         $engine_instance = new $engine_class(config_get('search_api_ai.settings'), $client);
 
-        // Retrieve **clean model name** from the class.
         $model_name = method_exists($engine_instance, 'getModelName')
           ? $engine_instance->getModelName()
           : $selected_engine;
 
-        // Retrieve dimension from the selected engine.
         if (method_exists($engine_instance, 'getDimension')) {
           $engine_config['dimension'] = $engine_instance->getDimension();
         }
@@ -557,7 +527,7 @@ function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) 
     }
   }
 
-  // Save the configuration using **model name instead of engine ID**.
+  // Persist legacy/global config (separate from per-index settings).
   config_set('search_api_ai.settings', 'embeddings_engine', $model_name);
   config_set('search_api_ai.settings', 'embeddings_engine_configuration', $engine_config);
 
@@ -565,9 +535,10 @@ function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) 
 }
 
 /**
- * Implements hook_search_api_index_items_alter().
- *
- * Injects OpenAI embeddings into items containing LLM vector fields.
+ * Inject embeddings while indexing.
+ */
+/**
+ * Inject embeddings while indexing.
  */
 function search_api_ai_search_api_index_items_alter(array &$items, SearchApiIndex $index) {
   global $search_api_ai_vectors;
@@ -577,7 +548,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     '@index' => $index->machine_name
   ], WATCHDOG_NOTICE);
 
-  // Load index options.
   $query = db_select('search_api_index', 's')
     ->fields('s', ['options'])
     ->condition('machine_name', $index->machine_name)
@@ -596,7 +566,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
   $embedding_settings = $index_options['embedding_settings'] ?? [];
   if (!is_array($embedding_settings)) $embedding_settings = [];
 
-  // Find the main content field (the one set to llm_vector_embedding).
   $main_content_field = NULL;
   foreach ($index_options['fields'] as $field_name => $field_info) {
     if (!empty($field_info['real_type']) && $field_info['real_type'] === 'llm_vector_embedding') {
@@ -611,7 +580,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
 
   $contextual_fields = array_diff(array_keys($index_options['fields']), [$main_content_field]);
 
-  // View mode
   $view_mode = 'full';
   if (!empty($index_options['data_alter_callbacks']['search_api_alter_add_viewed_entity']['settings']['mode'])) {
     $view_mode = $index_options['data_alter_callbacks']['search_api_alter_add_viewed_entity']['settings']['mode'];
@@ -634,7 +602,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       continue;
     }
 
-    // Title for citation/metadata
     $title = '';
     if ($entity_type == 'node' && !empty($entity->title)) {
       $title = $entity->title;
@@ -646,7 +613,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       $title = $entity->title;
     }
 
-    // Contextual/filterable metadata dynamically:
     $context_metadata = ['title' => $title];
     foreach ($contextual_fields as $field_name) {
       if (!empty($entity->{$field_name})) {
@@ -654,10 +620,10 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
         if (is_array($value) && isset($value['und']) && is_array($value['und'])) {
           $tids = [];
           $labels = [];
-          foreach ($value['und'] as $item) {
-            if (!empty($item['tid'])) {
-              $tids[] = $item['tid'];
-              $term = taxonomy_term_load($item['tid']);
+          foreach ($value['und'] as $it) {
+            if (!empty($it['tid'])) {
+              $tids[] = $it['tid'];
+              $term = taxonomy_term_load($it['tid']);
               if ($term && !empty($term->name)) {
                 $labels[] = $term->name;
               }
@@ -672,19 +638,18 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       }
     }
 
-    // --- Store both search_api_url (alias) and url (absolute) ---
     $relative_url = '';
     $absolute_url = '';
     if ($entity_type === 'node') {
       $internal_path = "node/$entity_id";
-      $path = path_load(['source' => $internal_path]);
+      $path  = path_load(['source' => $internal_path]);
       $alias = !empty($path['alias']) ? $path['alias'] : $internal_path;
       $relative_url = $alias;
       $absolute_url = url($internal_path, ['absolute' => TRUE]);
     }
     elseif ($entity_type === 'taxonomy_term') {
       $internal_path = "taxonomy/term/$entity_id";
-      $path = path_load(['source' => $internal_path]);
+      $path  = path_load(['source' => $internal_path]);
       $alias = !empty($path['alias']) ? $path['alias'] : $internal_path;
       $relative_url = $alias;
       $absolute_url = url($internal_path, ['absolute' => TRUE]);
@@ -692,7 +657,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     $context_metadata['search_api_url'] = $relative_url;
     $context_metadata['url'] = $absolute_url;
 
-    // Main content extraction
     $cleaned_text = '';
     if ($main_content_field == 'search_api_viewed') {
       $view = entity_view($entity, $view_mode);
@@ -702,8 +666,8 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       if (!empty($entity->{$main_content_field})) {
         $field_value = $entity->{$main_content_field};
         if (is_array($field_value)) {
-          foreach ($field_value as $langcode => $items) {
-            foreach ($items as $item_value) {
+          foreach ($field_value as $langcode => $items2) {
+            foreach ($items2 as $item_value) {
               if (!empty($item_value['value'])) {
                 $cleaned_text .= "\n" . trim(strip_tags($item_value['value']));
               }
@@ -719,13 +683,12 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       continue;
     }
 
-    // Chunk/embed main content.
     $vectors = search_api_ai_convert_embedding($cleaned_text, 'string', 'llm_vector_embedding', $embedding_settings, $main_content_field);
 
     foreach ($vectors as $chunk_idx => $entry) {
       $chunk_vector = $entry['vector'];
-      $chunk_text = $entry['chunk'];
-      if (!is_array($chunk_vector) || count($chunk_vector) !== (int)$expected_dimension) {
+      $chunk_text   = $entry['chunk'];
+      if (!is_array($chunk_vector) || count($chunk_vector) !== (int) $expected_dimension) {
         watchdog('search_api_ai', "❌ Invalid vector size for $main_content_field in entity $entity_type/$entity_id (chunk $chunk_idx)", [], WATCHDOG_ERROR);
         continue;
       }
@@ -746,69 +709,24 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
 }
 
 /**
- * Implements hook_search_api_processor_info().
+ * Processor definition for boosting DB results with AI search.
  */
-/*function search_api_ai_search_api_processor_info() {
-  $current_path = current_path();
-
-  // Only proceed with processor check if we're on an index configuration page
-  if (preg_match('#^admin/config/search/search_api/index/([^/]+)#', $current_path, $matches)) {
-    $index_machine_name = $matches[1];
-    $index = search_api_index_load($index_machine_name);
-
-    // Only add the processor if this is a database server
-    if ($index && ($server = search_api_server_load($index->server)) && $server->class === 'search_api_db_service') {
-      return [
-        'database_boost_by_ai_search' => [
-          'name' => t('Boost Database by AI Search'),
-          'description' => t(
-            'This combines results from the AI Search (Vector Database) with the traditional database, both finding results that would otherwise not be found due to lack of keyword match, as well as vastly improving the relevance of the top results. It prepends the results from the AI Search into the database results ready for and respecting any filtering applied to this index (such as filters, exposed filters, or facets).'
-          ),
-          'class' => 'DatabaseBoostByAiSearch',
-        ],
-      ];
-    }
-  }
-
-  return [];
-}*/
-
 function search_api_ai_search_api_processor_info() {
   return [
     'database_boost_by_ai_search' => [
       'name' => t('Boost Database by AI Search'),
-      'description' => t('This combines results from the AI Search (Vector Database) with the traditional database, both finding results that would otherwise not be found due to lack of keyword match, as well as vastly improving the relevance of the top results. It prepends the results from the AI Search into the database results ready for and respecting any filtering applied to this index (such as filters, exposed filters, or facets).'),
+      'description' => t('Prepends vector DB results to the traditional database results while respecting filters and facets.'),
       'class' => 'DatabaseBoostByAiSearch',
     ],
   ];
 }
 
-
+/**
+ * Alters DB query with AI search IDs when present.
+ */
 function search_api_ai_search_api_db_query_alter(SelectQueryInterface $query, SearchApiQueryInterface $search_api_query) {
   $item_ids = $search_api_query->getOption('ai_search_ids');
   if (!empty($item_ids)) {
     DatabaseBoostByAiSearch::queryAlter($query, $item_ids);
   }
 }
-
-/**
- * Implements hook_form_FORM_ID_alter().
- */
-function search_api_ai_form_search_api_admin_add_index_submit($form, &$form_state) {
-  // Get the embedding settings from the form
-  $embedding_settings = [
-    'embeddings_engine' => $form_state['values']['embeddings_engine'],
-    'embeddings_engine_configuration' => [
-      'dimension' => $form_state['values']['embeddings_engine_configuration']['dimension'],
-    ],
-  ];
-
-  // Add the settings to the index options
-  if (isset($form_state['values']['options'])) {
-    $form_state['values']['options']['embedding_settings'] = $embedding_settings;
-  }
-  else {
-    $form_state['values']['options'] = ['embedding_settings' => $embedding_settings];
-  }
-}
-

@@ -1,181 +1,313 @@
 <?php
 
 /**
- * Provides helper functions for Search API AI backends.
+ * Helper functions for Search API AI backends (engines + utilities).
+ *
+ * NOTE: Your hook_embedding_engine_info() must return entries like:
+ * [
+ *   'openai' => [
+ *     'label'  => t('OpenAI Embeddings'),
+ *     'class'  => 'OpenAiEmbeddingsDefault',
+ *     'file'   => 'includes/OpenAiEmbeddingsDefault.inc',
+ *     'module' => 'search_api_ai', // or the providing module name
+ *   ],
+ * ]
+ * Do NOT list Pinecone/Milvus here — those are vector stores (Search API servers),
+ * not embedding engines.
  */
 
 /**
- * Sets the engine configuration.
- *
- * @param object $backend
- *   The backend object.
- * @param array $configuration
- *   The configuration array.
+ * Sets the engine configuration onto a backend using the shared trait slot.
  */
 function search_api_ai_set_engine_configuration(&$backend, array $configuration) {
   $backend->traitConfiguration = $configuration;
 }
 
 /**
- * Provides default engine configuration.
- *
- * @return array
- *   The default configuration.
+ * Default engine configuration.
+ * Default to 1536 (e.g. text-embedding-3-small).
  */
 function search_api_ai_default_engine_configuration() {
-  return array(
+  return [
     'embeddings_engine' => NULL,
-    'embeddings_engine_configuration' => array(
-      'dimension' => 768,
-    ),
-  );
+    'embeddings_engine_configuration' => [
+      'dimension' => 1536,
+    ],
+  ];
 }
 
 /**
- * Builds the embedding engine configuration form.
- *
- * @param array $form
- *   The form array.
- * @param array $form_state
- *   The form state array.
- * @param array $configuration
- *   The engine configuration.
- *
- * @return array
- *   The modified form array.
+ * Build the embedding engine configuration form.
+ * Dimension is read-only and driven by the selected engine.
  */
 function search_api_ai_engine_configuration_form($form, &$form_state, $configuration) {
-  // Load available embedding engines.
   $options = search_api_ai_get_embedding_engines_options();
 
-  $form['embeddings_engine'] = array(
+  $form['embeddings_engine'] = [
     '#type' => 'select',
     '#title' => t('Embeddings Engine'),
     '#options' => $options,
     '#required' => TRUE,
-    '#default_value' => isset($configuration['embeddings_engine']) ? $configuration['embeddings_engine'] : '',
-    '#description' => t('The service to use for embeddings. Changing this requires reindexing.'),
-    '#ajax' => array(
+    '#default_value' => $configuration['embeddings_engine'] ?? '',
+    '#description' => t('Provider used to generate embeddings. Changing this requires reindexing.'),
+    '#ajax' => [
       'callback' => 'search_api_ai_update_embedding_configuration_form',
-      'wrapper' => 'embedding-configuration-wrapper',
-      'method' => 'replace',
-      'effect' => 'fade',
-    ),
-  );
+      'wrapper'  => 'embedding-configuration-wrapper',
+      'method'   => 'replace',
+      'effect'   => 'fade',
+    ],
+  ];
 
-  $form['embeddings_engine_configuration'] = array(
+  $form['embeddings_engine_configuration'] = [
     '#type' => 'fieldset',
     '#title' => t('Embeddings Engine Configuration'),
     '#prefix' => '<div id="embedding-configuration-wrapper">',
     '#suffix' => '</div>',
     '#collapsible' => TRUE,
     '#collapsed' => FALSE,
-  );
+  ];
 
   $dimension_value = isset($configuration['embeddings_engine_configuration']['dimension'])
-    ? $configuration['embeddings_engine_configuration']['dimension']
-    : 768;
+    ? (int) $configuration['embeddings_engine_configuration']['dimension']
+    : 1536;
 
-  $form['embeddings_engine_configuration']['dimension'] = array(
+  $form['embeddings_engine_configuration']['dimension'] = [
     '#type' => 'number',
     '#title' => t('Dimensions'),
-    '#description' => t('The number of dimensions for the embeddings.'),
+    '#description' => t('Fixed by the selected embedding model.'),
     '#default_value' => $dimension_value,
     '#required' => TRUE,
     '#disabled' => TRUE,
-  );
+  ];
 
   return $form;
 }
 
 /**
- * Loads the embeddings engine with a configuration.
- *
- * @param array $configuration
- *   The engine configuration.
- *
- * @return object|null
- *   The embeddings engine instance or NULL if not found.
+ * Load an embeddings engine instance for the given configuration.
  */
 function search_api_ai_load_embeddings_engine($configuration) {
-  $plugin_id = $configuration['embeddings_engine'];
-  $plugin_config = $configuration['embeddings_engine_configuration'];
+  $plugin_id     = $configuration['embeddings_engine'] ?? NULL;
+  $plugin_config = $configuration['embeddings_engine_configuration'] ?? [];
+
+  if (!$plugin_id) {
+    return NULL;
+  }
 
   $engines = module_invoke_all('embedding_engine_info');
-
-  if (isset($engines[$plugin_id])) {
-    $engine_class = $engines[$plugin_id]['class'];
-    module_load_include('inc', 'search_api_ai', 'includes/' . $engine_class);
-
-    try {
-      return new $engine_class($plugin_config);
-    } catch (Exception $e) {
-      watchdog('search_api_ai', 'Failed to initialize embedding engine: @message', array(
-        '@message' => $e->getMessage(),
-      ), WATCHDOG_ERROR);
-    }
+  if (empty($engines[$plugin_id])) {
+    return NULL;
   }
-  return NULL;
+
+  $def = $engines[$plugin_id];
+  if (empty($def['class']) || empty($def['file']) || empty($def['module'])) {
+    watchdog('search_api_ai', 'Invalid engine definition for @id', ['@id' => $plugin_id], WATCHDOG_ERROR);
+    return NULL;
+  }
+
+  module_load_include('inc', $def['module'], $def['file']);
+  if (!class_exists($def['class'])) {
+    watchdog('search_api_ai', 'Engine class @c not found', ['@c' => $def['class']], WATCHDOG_ERROR);
+    return NULL;
+  }
+
+  try {
+    // If your engine needs a client, build it here (example for OpenAI).
+    $client = NULL;
+    if ($plugin_id === 'openai') {
+      if (function_exists('key_get_key_value')) {
+        $api_key_name = config_get('openai.settings', 'api_key');
+        $api_key = $api_key_name ? key_get_key_value($api_key_name) : NULL;
+        if (!empty($api_key) && class_exists('OpenAIApi')) {
+          $client = new OpenAIApi($api_key);
+        }
+      }
+    }
+    return new $def['class']($plugin_config, $client);
+  }
+  catch (Exception $e) {
+    watchdog('search_api_ai', 'Failed to initialize embedding engine: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
+    return NULL;
+  }
 }
 
 /**
- * Retrieves all available embedding engines as options.
- *
- * @return array
- *   An array of available embedding engines.
+ * Build the options list for embedding engines.
+ * Avoid creating network clients here; rely on static/cheap checks.
  */
 function search_api_ai_get_embedding_engines_options() {
-  $options = array();
+  $options = [];
   $engines = module_invoke_all('embedding_engine_info');
 
-  // Ensure the OpenAI module functions are available.
-  module_load_include('module', 'openai');
+  foreach ($engines as $id => $def) {
+    if (empty($def['class']) || empty($def['file']) || empty($def['module'])) {
+      continue;
+    }
+    module_load_include('inc', $def['module'], $def['file']);
+    if (!class_exists($def['class'])) {
+      continue;
+    }
 
-  foreach ($engines as $id => $definition) {
-    module_load_include('inc', 'search_api_ai_openai', 'includes/' . $definition['class']);
+    // If the engine exposes a static availability check, use it.
+    $available = TRUE;
+    if (method_exists($def['class'], 'isAvailableStatic')) {
+      try {
+        $available = call_user_func([$def['class'], 'isAvailableStatic']);
+      } catch (Exception $e) {
+        $available = FALSE;
+      }
+    }
 
-    // Prepare required arguments.
-    $config = array('dimension' => 1536);  // Default config, adjust as needed
-    $client = openai_get_client();         // Now this should work since the module is loaded
-
-    // Instantiate the embedding engine with required arguments.
-    $engine_instance = new $definition['class']($config, $client);
-
-    if ($engine_instance->isAvailable()) {
-      $options[$id] = $definition['label'];
+    if ($available) {
+      $options[$id] = $def['label'] ?? $id;
     }
   }
 
   if (empty($options)) {
-    backdrop_set_message(t('No embedding engines available. Please install and enable an embedding engine module.'), 'warning');
+    backdrop_set_message(t('No embedding engines available. Please enable an embedding engine module.'), 'warning');
   }
 
   return $options;
 }
 
 /**
- * AJAX callback to update the embedding engine configuration form.
+ * AJAX callback to update the engine configuration (dimension).
  */
 function search_api_ai_update_embedding_configuration_form($form, &$form_state) {
-  $selected_engine = $form_state['values']['embeddings_engine'];
+  $selected = $form_state['values']['embeddings_engine'] ?? NULL;
+  if (!$selected) {
+    return $form['embeddings_engine_configuration'];
+  }
 
-  if ($selected_engine) {
-    $engines = module_invoke_all('embedding_engine_info');
+  $engines = module_invoke_all('embedding_engine_info');
+  if (empty($engines[$selected])) {
+    return $form['embeddings_engine_configuration'];
+  }
 
-    if (isset($engines[$selected_engine])) {
-      $engine_class = $engines[$selected_engine]['class'];
-      module_load_include('inc', 'search_api_ai', 'includes/' . $engine_class);
+  $def = $engines[$selected];
+  if (empty($def['class']) || empty($def['file']) || empty($def['module'])) {
+    return $form['embeddings_engine_configuration'];
+  }
 
-      try {
-        $engine_instance = new $engine_class();
-        $dimension_value = $engine_instance->getDimension();
+  module_load_include('inc', $def['module'], $def['file']);
+  if (!class_exists($def['class'])) {
+    return $form['embeddings_engine_configuration'];
+  }
 
-        $form_state['values']['embeddings_engine_configuration']['dimension'] = $dimension_value;
-      } catch (Exception $e) {
-        backdrop_set_message(t('Failed to load embedding engine configuration: @message', array('@message' => $e->getMessage())), 'error');
+  $dimension_value = 1536; // sane fallback
+  try {
+    // Build minimal constructor args; avoid network calls here.
+    $engine = new $def['class']([], NULL);
+    if (method_exists($engine, 'getDimension')) {
+      $dimension_value = (int) $engine->getDimension();
+    }
+  } catch (Exception $e) {
+    watchdog('search_api_ai', 'Failed to init engine @id in AJAX: @m', ['@id' => $selected, '@m' => $e->getMessage()], WATCHDOG_ERROR);
+  }
+
+  // Reflect into form/form_state.
+  $form_state['values']['embeddings_engine_configuration']['dimension'] = $dimension_value;
+  $form['embeddings_engine_configuration']['dimension']['#value'] = $dimension_value;
+
+  return $form['embeddings_engine_configuration'];
+}
+
+/* --------------------------------------------------------------------------
+ * VECTOR NORMALIZER (works for Milvus & Pinecone)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Normalize global $search_api_ai_vectors into a uniform set of rows
+ * so both Milvus and Pinecone can ingest either shape:
+ *
+ * A) FLAT rows (current alter hook):
+ *    [
+ *      ['entity_type'=>'node','entity_id'=>123,'field_name'=>'search_api_viewed',
+ *       'chunk_index'=>0,'vector'=>[...], 'content'=>'...', 'title'=>'...',
+ *       'search_api_url'=>'...', 'url'=>'...'],
+ *      ...
+ *    ]
+ *
+ * B) LEGACY nested:
+ *    $search_api_ai_vectors["node/123"]['vectors'][$field_name] = [
+ *      'vectors' => [...], 'content' => '...', 'llm_vector_embedding' => TRUE
+ *    ]
+ *
+ * @param string $entity_type
+ * @param int    $entity_id
+ * @param int    $expected_dimension
+ *
+ * @return array of rows:
+ *   [
+ *     [
+ *       'entity_type' => 'node',
+ *       'entity_id'   => 123,
+ *       'field_name'  => 'search_api_viewed',
+ *       'chunk_index' => 0,
+ *       'values'      => [floats...],
+ *       'metadata'    => ['content'=>'...', 'title'=>'...', 'search_api_url'=>'...', 'url'=>'...'],
+ *       'llm_vector_embedding' => TRUE,
+ *     ],
+ *     ...
+ *   ]
+ */
+function search_api_ai_normalize_vectors($entity_type, $entity_id, $expected_dimension) {
+  global $search_api_ai_vectors;
+  $out = [];
+  if (empty($entity_type) || empty($entity_id)) {
+    return $out;
+  }
+
+  // -------- FLAT format --------
+  if (is_array($search_api_ai_vectors) && isset($search_api_ai_vectors[0]) && is_array($search_api_ai_vectors[0])) {
+    foreach ($search_api_ai_vectors as $row) {
+      if (!is_array($row)) continue;
+      if (($row['entity_type'] ?? NULL) !== $entity_type) continue;
+      if ((int)($row['entity_id'] ?? 0) !== (int)$entity_id) continue;
+
+      $vec = $row['vector'] ?? NULL;
+      if (!is_array($vec) || count($vec) !== (int)$expected_dimension) {
+        continue;
       }
+
+      $out[] = [
+        'entity_type' => $entity_type,
+        'entity_id'   => (int)$entity_id,
+        'field_name'  => $row['field_name'] ?? 'unknown',
+        'chunk_index' => isset($row['chunk_index']) ? (int)$row['chunk_index'] : 0,
+        'values'      => array_values(array_map('floatval', $vec)),
+        'metadata'    => [
+          'content'        => isset($row['content']) ? (string)$row['content'] : '',
+          'title'          => $row['title'] ?? NULL,
+          'search_api_url' => $row['search_api_url'] ?? NULL,
+          'url'            => $row['url'] ?? NULL,
+        ],
+        'llm_vector_embedding' => $row['llm_vector_embedding'] ?? TRUE,
+      ];
     }
   }
 
-  return $form['embeddings_engine_configuration'];
+  // -------- LEGACY nested format --------
+  $key = "$entity_type/$entity_id";
+  if (isset($search_api_ai_vectors[$key]['vectors']) && is_array($search_api_ai_vectors[$key]['vectors'])) {
+    foreach ($search_api_ai_vectors[$key]['vectors'] as $field_name => $entry) {
+      if (!is_array($entry) || !isset($entry['vectors'])) continue;
+      $vec = $entry['vectors'];
+      if (!is_array($vec) || count($vec) !== (int)$expected_dimension) continue;
+
+      $out[] = [
+        'entity_type' => $entity_type,
+        'entity_id'   => (int)$entity_id,
+        'field_name'  => $field_name,
+        'chunk_index' => 0,
+        'values'      => array_values(array_map('floatval', $vec)),
+        'metadata'    => [
+          'content' => isset($entry['content']) ? (string)$entry['content'] : '',
+        ],
+        'llm_vector_embedding' => $entry['llm_vector_embedding'] ?? TRUE,
+      ];
+    }
+  }
+
+  return $out;
 }

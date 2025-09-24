@@ -1,120 +1,122 @@
 (function ($, Backdrop) {
-
   'use strict';
 
-  // ✅ once() polyfill for Backdrop
-  function once(id, $elements) {
-    return $elements.filter(function () {
-      const alreadyProcessed = $(this).data('once-' + id);
-      if (alreadyProcessed) {
-        return false;
+  function escapeHtml(s) {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  // Auto-link bare http/https URLs, but keep trailing punctuation out of the link.
+  function autolink(s) {
+    return s.replace(
+      /\bhttps?:\/\/[^\s<>"']+[^\s<>"'.,!?;:)\]}]/g,
+      function (url) {
+        // Strip off trailing punctuation separately
+        var match = url.match(/^(.*?)([.,!?;:)\]}]+)?$/);
+        var clean = match[1];
+        var trail = match[2] || '';
+        return '<a href="' + clean + '" target="_blank" rel="nofollow noopener">' +
+          clean +
+          '</a>' + trail;
       }
-      $(this).data('once-' + id, true);
-      return true;
-    });
+    );
+  }
+
+
+  // Replace your current streamText with this version.
+  function streamText($el, text, speed, done) {
+    $el.html('');               // write HTML, not text
+    var i = 0;
+
+    (function next() {
+      if (i < text.length) {
+        // Escape the partial slice, then autolink URLs so they're clickable.
+        var slice = text.slice(0, i + 1);
+        var html  = autolink(escapeHtml(slice));
+        $el.html(html);
+        i++;
+        setTimeout(next, speed);
+      } else if (typeof done === 'function') {
+        done();
+      }
+    })();
   }
 
   Backdrop.behaviors.searchApiAiStream = {
     attach: function (context) {
-      const streamElements = $('[data-search-api-ai-ajax]', context);
+      var $context = $(context);
 
-      once('data-streamed', streamElements).each(function () {
-        const element = $(this);
-        const form = element.closest('form');
+      // Stream any element marked for streaming.
+      $context.find('.chat-stream-text').once('chat-stream').each(function () {
+        var $textEl   = $(this);
+        var original  = $textEl.text();
+        var $sources  = $textEl.siblings('.chat-source-link');
 
-        form.find('.chat-form-query').on('keydown', function (e) {
-          if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            form.find('.chat-form-send').trigger('click');
-          }
-        });
-
-        element.on('click', function (event) {
-          event.preventDefault();
-
-          const clickedElement = $(event.currentTarget);
-          const responseField = $('#' + clickedElement.attr('data-search-api-ai-ajax'));
-          let data = form.serializeArray();
-
-          data.push({
-            name: event.currentTarget.name,
-            value: event.currentTarget.value,
+        if ($sources.length) $sources.hide();
+        if (original && original.length) {
+          streamText($textEl, original, 20, function () {
+            if ($sources.length) $sources.show();
           });
-
-          $.ajax({
-            url: form.attr('action'),
-            method: 'POST',
-            data: data,
-            xhrFields: {
-              onprogress: function (event) {
-                if (responseField.length && responseField[0]) {
-                  responseField.html(event.currentTarget.response.replaceAll('\n', '<br />'));
-                  responseField.scrollTop(responseField[0].scrollHeight);
-                }
-              },
-            },
-          });
-        });
-      });
-    },
-  };
-
-})(jQuery, Backdrop);
-
-(function ($, Backdrop) {
-  'use strict';
-
-  Backdrop.behaviors.searchApiAiEnterSubmit = {
-    attach: function (context) {
-      $('.chat-form-query', context).each(function () {
-        const $textarea = $(this);
-
-        if ($textarea.hasClass('enter-submit-attached')) {
-          return;
         }
-        $textarea.addClass('enter-submit-attached');
+      });
 
-        $textarea.on('keydown', function (e) {
-          if (e.key === 'Enter' && !e.shiftKey) {
+      // Enter-to-submit (Shift+Enter = newline)
+      $context.find('.chat-form-query').once('chat-enter-submit').each(function () {
+        var $input = $(this);
+        $input.on('keydown', function (e) {
+          if (e.isComposing || e.keyCode === 229) return;
+          var isEnter = (e.key === 'Enter' || e.which === 13);
+          if (isEnter && !e.shiftKey) {
             e.preventDefault();
-
-            // Trigger mousedown instead of click for Backdrop AJAX compatibility
-            const $sendButton = $textarea.closest('form').find('.chat-form-send');
-            $sendButton.trigger('mousedown');
+            var $form = $input.closest('form');
+            var $btn  = $form.find('.chat-form-send:enabled:visible').first();
+            if ($btn.length) {
+              $btn.trigger('mousedown').trigger('click');
+            } else {
+              $form.trigger('submit');
+            }
           }
         });
       });
-    },
-  };
 
+      // Topbar Clear History -> click hidden submit inside the form (no validation)
+      $context.find('.chatbot-topbar .chat-form-clear-history')
+        .once('chat-clear-history')
+        .on('click', function (e) {
+          e.preventDefault();
+          var $wrapper = $(this).closest('.chatbot-wrapper');
+          var $proxy = $wrapper.find('.chat-form-clear-history-proxy:enabled').first();
+          if ($proxy.length) {
+            $proxy.trigger('mousedown').trigger('click');
+          }
+        });
+    }
+  };
 })(jQuery, Backdrop);
 
 (function ($, Backdrop) {
   'use strict';
-
   Backdrop.behaviors.chatToggleBehavior = {
     attach: function (context) {
-      $('.chat-toggle-button', context).once('chat-toggle').each(function () {
-        const $button = $(this);
-        const $block = $button.closest('.block-search-api-ai-simple-chatbot-search-api-ai-chat-form');
+      $(context).find('.chat-toggle-button').once('chat-toggle').each(function () {
+        var $button = $(this);
+        var $block  = $button.closest('.block-search-api-ai-simple-chatbot-search-api-ai-chat-form');
 
-        // Check localStorage on page load
-        const isCollapsed = localStorage.getItem('chatbot-collapsed') === 'true';
-        if (isCollapsed) {
-          $block.addClass('collapsed');
-          $button.text('💬 Open Chat');
-        } else {
-          $block.removeClass('collapsed');
-          $button.text('💬 Chat');
-        }
+        var isCollapsed = localStorage.getItem('chatbot-collapsed') === 'true';
+        $block.toggleClass('collapsed', isCollapsed);
+        $button.text(isCollapsed ? '💬 Open Chat' : '💬 Chat');
 
         $button.on('click', function () {
           $block.toggleClass('collapsed');
-          const isNowCollapsed = $block.hasClass('collapsed');
-          localStorage.setItem('chatbot-collapsed', isNowCollapsed);
-          $button.text(isNowCollapsed ? '💬 Open Chat' : '💬 Chat');
+          var now = $block.hasClass('collapsed');
+          localStorage.setItem('chatbot-collapsed', now);
+          $button.text(now ? '💬 Open Chat' : '💬 Chat');
         });
       });
-    },
+    }
   };
 })(jQuery, Backdrop);
