@@ -1168,7 +1168,14 @@ ARTICLES (Markdown; multiple results are separated by lines):
       return '<p><em>' . check_plain(t('OpenAI API key is not configured.')) . '</em></p>';
     }
 
-    $api = new OpenAIApi($api_key);
+    // Cache the OpenAIApi client instance to avoid re-instantiating on every request.
+    static $cached_api = NULL;
+    static $cached_api_key = NULL;
+    if ($cached_api === NULL || $cached_api_key !== $api_key) {
+      $cached_api = new OpenAIApi($api_key);
+      $cached_api_key = $api_key;
+    }
+    $api = $cached_api;
 
     // IMPORTANT: send prompt as a single message; model should output HTML per your instructions.
     $messages = array(array('role' => 'user', 'content' => $prompt));
