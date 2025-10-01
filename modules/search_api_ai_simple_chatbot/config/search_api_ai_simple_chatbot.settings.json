@@ -1,26 +1,22 @@
 {
-  "_config_name": "search_api_ai_simple_chatbot.settings",
-  "chat_config": {
-    "index": "ai_search",
-    "view": "",
-    "entity_types": [],
-    "no_results_message": "Sorry, I couldn't find what you are looking for.",
-    "error_message": "Sorry, something went wrong. Please try again later.",
-    "no_response_message": "No answer was provided.",
-    "chat_model": "gpt-4o-mini",
-    "temperature": "0.4",
-    "max_tokens": "1024",
-
-    "chat_system_role": "You are a helpful assistant for a knowledge base. Answer ONLY using the provided context. Prefer more recently published content first.\n\nWhen you cite a fact, copy the exact anchor tag from the Context (it already includes the correct page title and looks like <a href='URL' class='kb-source'>Node Title</a>) and place it immediately after the sentence it supports.\n\nDo not invent links, do not change the anchor text, and do not introduce markdown links. Preserve the anchor exactly as provided (including class='kb-source'). Do NOT provide a list of sources at the end.\n",
-
-    "assistant_message": "[context]\nUsing ONLY the context above, answer the user's question in 3–5 concise sentences. After each sentence that relies on the context, paste the exact <a ... class='kb-source'>…</a> anchor from the context immediately after the sentence. Do not alter the anchor text or attributes. If no supporting anchor exists for a claim, omit the claim. If the context does not contain enough information to answer, say so briefly.\n",
-
-    "user_message": "[user-prompt]\nPlease answer using only the context provided. Add the exact <a ... class='kb-source'>…</a> anchor immediately after each supported sentence. Do not use Markdown links and do not include a sources list. If there isn't enough info in the context, say you don’t have enough information.\n",
-
-    "top_k": "4",
-    "score_threshold": "0.5",
-    "max_length": "1000",
-    "embedding_model": "text-embedding-3-small",
-    "debug": false
-  }
+    "_config_name": "search_api_ai_simple_chatbot.settings",
+    "chat_config": {
+        "index": "ai_search",
+        "view": "",
+        "entity_types": [],
+        "no_results_message": "Sorry, I couldn't find what you are looking for.",
+        "error_message": "Sorry, something went wrong. Please try again later.",
+        "no_response_message": "No answer was provided.",
+        "chat_model": "gpt-4o-mini",
+        "temperature": "0.4",
+        "max_tokens": "1024",
+        "chat_system_role": "You are a helpful assistant for an RC airplane knowledge base. Answer ONLY using the provided context.\r\nFor each fact or claim, cite the correct Source link immediately after the fact using the exact format <a href='...'>Source</a>.\r\nNever invent or hallucinate links. Never cite a source that was not provided.\r\nNever use [Source](URL) or any markdown links—only the real HTML links given in the context.\r\nIf you use multiple facts, cite the source for each.\r\nDo NOT provide a list of sources at the end.\r\n",
+        "assistant_message": "[context]\r\nPlease use the provided context to answer the user’s question as completely as possible. Cite your sources in-line or at the end, but never generate a list of sources. Never invent, guess, or fabricate sources.\r\n",
+        "user_message": "[user-prompt]\r\nWrite a clear, informative answer in 3–5 sentences using only the context above. Cite sources as [Source](URL) at the end if needed. Do NOT add a list of titles, do NOT use phrases like \"Source Documents\". If there is no information, say you don’t have enough info.\r\n",
+        "top_k": "4",
+        "score_threshold": "0.5",
+        "max_length": "1000",
+        "embedding_model": "text-embedding-3-small",
+        "debug": false
+    }
 }

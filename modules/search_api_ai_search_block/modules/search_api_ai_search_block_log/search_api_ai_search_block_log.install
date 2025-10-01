@@ -1,0 +1,136 @@
+<?php
+
+/**
+ * @file
+ * Install, update and uninstall functions for Search API AI Search Block Log.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function search_api_ai_search_block_log_schema() {
+  $schema['search_api_ai_search_block_log'] = array(
+    'description' => 'Stores AI search log data.',
+    'fields' => array(
+      'id' => array(
+        'description' => 'The primary identifier for a log entry.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'block_id' => array(
+        'description' => 'The block ID.',
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'default' => '',
+      ),
+      'uid' => array(
+        'description' => 'The {users}.uid that created this log entry.',
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'query' => array(
+        'description' => 'The search query text.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'response' => array(
+        'description' => 'The AI-generated response text.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'created' => array(
+        'description' => 'The Unix timestamp when the log entry was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'changed' => array(
+        'description' => 'The Unix timestamp when the log entry was most recently updated.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'score' => array(
+        'description' => 'User feedback score for the response.',
+        'type' => 'int',
+        'size' => 'tiny',
+        'not null' => FALSE,
+      ),
+      'feedback' => array(
+        'description' => 'Detailed user feedback text.',
+        'type' => 'text',
+        'size' => 'big',
+        'not null' => FALSE,
+      ),
+      'expiration' => array(
+        'description' => 'The Unix timestamp when this log entry should be deleted.',
+        'type' => 'int',
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('id'),
+    'indexes' => array(
+      'block_id' => array('block_id'),
+      'uid' => array('uid'),
+      'created' => array('created'),
+      'changed' => array('changed'),
+      'expiration' => array('expiration'),
+    ),
+  );
+
+  return $schema;
+}
+
+/**
+ * Add feedback and expiration fields to log table.
+ */
+function search_api_ai_search_block_log_update_1000() {
+  // Add feedback field
+  if (!db_field_exists('search_api_ai_search_block_log', 'feedback')) {
+    db_add_field('search_api_ai_search_block_log', 'feedback', array(
+      'description' => 'Detailed user feedback text.',
+      'type' => 'text',
+      'size' => 'big',
+      'not null' => FALSE,
+    ));
+  }
+
+  // Add expiration field
+  if (!db_field_exists('search_api_ai_search_block_log', 'expiration')) {
+    db_add_field('search_api_ai_search_block_log', 'expiration', array(
+      'description' => 'The Unix timestamp when this log entry should be deleted.',
+      'type' => 'int',
+      'not null' => FALSE,
+    ));
+
+    // Add index for expiration field
+    db_add_index('search_api_ai_search_block_log', 'expiration', array('expiration'));
+  }
+
+  // Calculate and set expiration dates for existing entries
+  $config = config('search_api_ai_search_block_log.settings');
+  $retention_days = $config->get('log_retention') ?: 30;
+  
+  if ($retention_days > 0) {
+    // Update existing entries to have expiration dates
+    db_query("UPDATE {search_api_ai_search_block_log} 
+              SET expiration = created + :seconds 
+              WHERE expiration IS NULL", 
+              array(':seconds' => $retention_days * 86400));
+  }
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function search_api_ai_search_block_log_uninstall() {
+  // Clean up any configuration
+  config_clear('search_api_ai_search_block_log.settings');
+}
+

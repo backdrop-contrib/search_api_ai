@@ -1,5 +1,7 @@
 <?php
 
+require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiBackend.inc';
+
 /**
  * Chat form (renders full transcript + input).
  */
@@ -194,8 +196,25 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
 
   // 3) Embedding
   try {
-    $embedding_vector = $openai->embedding($user_query, $embedding_model);
-    if (empty($embedding_vector)) { throw new Exception('Empty embedding.'); }
+    // Create configuration for the embedding engine
+    $embedding_configuration = [
+      'embeddings_engine' => $embedding_model,
+      'embeddings_engine_configuration' => ['dimension' => 1536], // Default dimension
+    ];
+
+    // Load the embedding engine
+    $embedding_engine = search_api_ai_load_embeddings_engine($embedding_configuration);
+
+    if (!$embedding_engine) {
+      throw new Exception('Failed to load embedding engine.');
+    }
+
+    // Create the embedding for the user query
+    $embedding_vector = $embedding_engine->generateEmbeddings($user_query);
+
+    if (!$embedding_vector) {
+      throw new Exception('Error retrieving query embedding.');
+    }
   } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
     $_SESSION['search_api_ai_chat_history'][] = [
@@ -387,12 +406,26 @@ function search_api_ai_simple_chatbot_get_query_vectors($index, $user_query, $ch
   if (strpos($namespace, ':') === 0) $namespace = substr($namespace, 1);
 
   try {
-    $api_key_name = config_get('openai.settings', 'api_key');
-    $api_key      = key_get_key_value($api_key_name);
-    $model        = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
-    $openai       = new OpenAIApi($api_key);
-    $embedding    = $openai->embedding($user_query, $model);
-    if (empty($embedding)) return NULL;
+    // Create configuration for the embedding engine
+    $model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
+    $embedding_configuration = [
+      'embeddings_engine' => $model,
+      'embeddings_engine_configuration' => ['dimension' => 1536], // Default dimension
+    ];
+
+    // Load the embedding engine
+    $embedding_engine = search_api_ai_load_embeddings_engine($embedding_configuration);
+
+    if (!$embedding_engine) {
+      throw new Exception('Failed to load embedding engine.');
+    }
+
+    // Create the embedding for the user query
+    $embedding = $embedding_engine->generateEmbeddings($user_query);
+
+    if (!$embedding) {
+      throw new Exception('Error retrieving query embedding.');
+    }
   } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
     return NULL;

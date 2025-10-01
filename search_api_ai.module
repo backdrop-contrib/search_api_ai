@@ -24,10 +24,6 @@ function search_api_ai_config_info() {
  */
 function search_api_ai_autoload_info() {
   return array(
-    'EmbeddingEnginePluginManager' => 'includes/EmbeddingEnginePluginManager.inc',
-    'EmbeddingEngineStatic' => 'includes/EmbeddingEngineStatic.inc',
-    'EmbeddingEnginePluginBase' => 'includes/EmbeddingEnginePluginBase.inc',
-    'EmbeddingEngineInterface' => 'includes/EmbeddingEngineInterface.inc',
     'SearchApiAiBackendInterface' => 'includes/SearchApiBackendInterface.inc',
     'TextChunker' => 'includes/TextChunker.inc',
     'SearchApiAiBackendPluginBase' => 'includes/SearchApiAiBackendPluginBase.inc',
@@ -150,14 +146,6 @@ function search_api_ai_get_embedding_engine_config(array $embedding_settings) {
   ];
 }
 
-/**
- * Implements hook_init().
- */
-function search_api_ai_init() {
-  $plugin_manager = new EmbeddingEnginePluginManager();
-  $embedding_engine_static = new EmbeddingEngineStatic($plugin_manager);
-  $GLOBALS['search_api_ai']['embedding_engine_static'] = $embedding_engine_static;
-}
 
 /**
  * Implements hook_form_alter().
@@ -309,20 +297,8 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
 
     $options = [];
     foreach ($embedding_engines as $id => $engine) {
-      $engine_class = $engine['class'];
-      if (class_exists($engine_class)) {
-        try {
-          $engine_instance = new $engine_class([], NULL);
-          $options[$id] = method_exists($engine_instance, 'getModelName')
-            ? $engine_instance->getModelName()
-            : $id;
-        } catch (Exception $e) {
-          watchdog('search_api_ai', 'Error instantiating embedding engine @engine: @message', [
-            '@engine' => $id,
-            '@message' => $e->getMessage(),
-          ], WATCHDOG_ERROR);
-        }
-      }
+      // Use the label from embedding_engine_info() hook instead of instantiating the class
+      $options[$id] = isset($engine['label']) ? $engine['label'] : $id;
     }
 
     // Only show when server class is Milvus or Pinecone.
@@ -442,13 +418,9 @@ function search_api_ai_update_embedding_dimension($form, &$form_state) {
     $engine_class = $all_engines[$selected_engine]['class'];
     if (class_exists($engine_class)) {
       try {
-        $api_key_name = config_get('openai.settings', 'api_key');
-        $api_key = key_get_key_value($api_key_name);
-        if (!$api_key) {
-          throw new Exception('OpenAI API key is missing.');
-        }
-        $client = new OpenAIApi($api_key);
-        $engine_instance = new $engine_class([], $client);
+        // Create engine instance with NULL client - we only need getDimension()
+        // which doesn't require a live API connection
+        $engine_instance = new $engine_class([], NULL);
 
         if (method_exists($engine_instance, 'getDimension')) {
           $dimension_value = $engine_instance->getDimension();
