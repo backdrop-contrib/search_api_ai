@@ -1,0 +1,7 @@
+name = Search API AI Search Block
+description = Provides a block for AI search functionality.
+backdrop = 1.x
+type = module
+package = Search
+dependencies[] = openai
+dependencies[] = search_api

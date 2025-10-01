@@ -114,7 +114,8 @@ function search_api_ai_load_embeddings_engine($configuration) {
   try {
     // If your engine needs a client, build it here (example for OpenAI).
     $client = NULL;
-    if ($plugin_id === 'openai') {
+    // Handle both 'openai' and OpenAI-specific embedding models like 'text-embedding-3-small'
+    if ($plugin_id === 'openai' || strpos($plugin_id, 'text-embedding-') === 0) {
       if (function_exists('key_get_key_value')) {
         $api_key_name = config_get('openai.settings', 'api_key');
         $api_key = $api_key_name ? key_get_key_value($api_key_name) : NULL;

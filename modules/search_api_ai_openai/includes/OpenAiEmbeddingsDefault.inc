@@ -88,18 +88,12 @@ abstract class OpenAiEmbeddingsDefault {
    *   The generated embeddings.
    */
   public function generateEmbeddings($text, $options = array()) {
-    $embed_settings = array(
-      'model' => $this->modelName,
-      'input' => $text,
-    );
+    // Directly call the embedding method with required parameters
+    $model = $this->modelName;
 
-    if (!empty($this->config['dimension'])) {
-      $embed_settings['dimension'] = $this->config['dimension'];
-    }
-
-    // Assuming $this->client is a valid OpenAI client instance.
-    $response = $this->client->embeddings()->create($embed_settings)->toArray();
-    $query_embedding = isset($response['data'][0]['embedding']) ? $response['data'][0]['embedding'] : NULL;
+    // The OpenAIApi->embedding() method handles the embedding generation
+    // with the proper parameters (input and model)
+    $query_embedding = $this->client->embedding($text, $model);
 
     return $query_embedding;
   }

@@ -1,0 +1,444 @@
+<?php
+
+/**
+ * @file
+ * The module file for Search API AI Search Block Log.
+ */
+
+/**
+ * Implements hook_permission().
+ */
+function search_api_ai_search_block_log_permission() {
+  return array(
+    'administer search api ai search block log' => array(
+      'title' => t('Administer AI search block logs'),
+      'description' => t('Configure AI search block logging settings.'),
+      'restrict access' => TRUE,
+    ),
+    'view search api ai search block log' => array(
+      'title' => t('View AI search block logs'),
+      'description' => t('View AI search block log entries.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function search_api_ai_search_block_log_menu() {
+  $items = array();
+
+  // Admin settings page
+  $items['admin/config/search/search-api-ai-search-block-log'] = array(
+    'title' => 'AI Search Block Log Settings',
+    'description' => 'Configure AI search block logging.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('search_api_ai_search_block_log_settings_form'),
+    'access arguments' => array('administer search api ai search block log'),
+    'file' => 'search_api_ai_search_block_log.admin.inc',
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  // View logs page
+  $items['admin/reports/search-api-ai-search-block-log'] = array(
+    'title' => 'AI Search Block Logs',
+    'description' => 'View AI search block query and response logs.',
+    'page callback' => 'search_api_ai_search_block_log_view_page',
+    'access arguments' => array('view search api ai search block log'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+
+  // View individual log entry
+  $items['admin/reports/search-api-ai-search-block-log/%search_api_ai_search_block_log'] = array(
+    'title' => 'View Log Entry',
+    'page callback' => 'search_api_ai_search_block_log_view_entry',
+    'page arguments' => array(3),
+    'access arguments' => array('view search api ai search block log'),
+    'type' => MENU_CALLBACK,
+  );
+
+  // Edit log entry
+  $items['admin/reports/search-api-ai-search-block-log/%search_api_ai_search_block_log/edit'] = array(
+    'title' => 'Edit Log Entry',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('search_api_ai_search_block_log_edit_form', 3),
+    'access arguments' => array('administer search api ai search block log'),
+    'type' => MENU_CALLBACK,
+    'file' => 'search_api_ai_search_block_log.admin.inc',
+  );
+
+  // Delete log entry
+  $items['admin/reports/search-api-ai-search-block-log/%search_api_ai_search_block_log/delete'] = array(
+    'title' => 'Delete Log Entry',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('search_api_ai_search_block_log_delete_form', 3),
+    'access arguments' => array('administer search api ai search block log'),
+    'type' => MENU_CALLBACK,
+    'file' => 'search_api_ai_search_block_log.admin.inc',
+  );
+
+  // Score callback for AJAX
+  $items['search-api-ai-search-block-log/score'] = array(
+    'title' => 'Score Log Entry',
+    'page callback' => 'search_api_ai_search_block_log_score_callback',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_autoload_info().
+ */
+function search_api_ai_search_block_log_autoload_info() {
+  return array(
+    'AiSearchBlockLogHelper' => 'includes/AiSearchBlockLogHelper.php',
+  );
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function search_api_ai_search_block_log_config_info() {
+  return array(
+    'search_api_ai_search_block_log.settings' => array(
+      'label' => t('AI Search Block Log Settings'),
+      'group' => t('Configuration'),
+    ),
+  );
+}
+
+/**
+ * Menu loader callback: Load a log entry.
+ */
+function search_api_ai_search_block_log_load($id) {
+  $log = db_select('search_api_ai_search_block_log', 'l')
+    ->fields('l')
+    ->condition('id', $id)
+    ->execute()
+    ->fetchObject();
+  
+  return $log;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function search_api_ai_search_block_log_theme() {
+  return array(
+    'search_api_ai_search_block_log' => array(
+      'render element' => 'elements',
+      'template' => 'search-api-ai-search-block-log',
+      'path' => backdrop_get_path('module', 'search_api_ai_search_block_log') . '/templates',
+    ),
+  );
+}
+
+/**
+ * Implements hook_cron().
+ */
+function search_api_ai_search_block_log_cron() {
+  $helper = search_api_ai_search_block_log_get_helper();
+  return $helper->cron();
+}
+
+/**
+ * Prepares variables for AI search block log templates.
+ *
+ * Default template: ai-search-block-log.tpl.php.
+ *
+ * @param array $variables
+ *   An associative array containing the log information.
+ */
+function template_preprocess_search_api_ai_search_block_log(&$variables) {
+  $variables['view_mode'] = isset($variables['elements']['#view_mode']) ? $variables['elements']['#view_mode'] : 'full';
+
+  foreach (element_children($variables['elements']) as $key) {
+    $variables['content'][$key] = $variables['elements'][$key];
+  }
+
+  // Add classes
+  $variables['classes'] = array('search-api-ai-search-block-log');
+  if (!empty($variables['view_mode'])) {
+    $variables['classes'][] = 'search-api-ai-search-block-log-' . $variables['view_mode'];
+  }
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function search_api_ai_search_block_log_form_alter(&$form, &$form_state, $form_id) {
+  // Attach logging JavaScript to the search form
+  if ($form_id === 'search_api_ai_search_block_form') {
+    $module_path = backdrop_get_path('module', 'search_api_ai_search_block_log');
+    $form['#attached']['js'][] = $module_path . '/js/search_api_ai_search_block_log.js';
+  }
+}
+
+/**
+ * Start a new log entry.
+ *
+ * @param string $block_id
+ *   The block ID.
+ * @param int $uid
+ *   The user ID.
+ * @param string $query
+ *   The search query.
+ *
+ * @return int
+ *   The log entry ID.
+ */
+function search_api_ai_search_block_log_start($block_id, $uid, $query) {
+  $helper = search_api_ai_search_block_log_get_helper();
+  return $helper->start($block_id, $uid, $query);
+}
+
+/**
+ * Add a response to a log entry.
+ *
+ * @param int $log_id
+ *   The log entry ID.
+ * @param string $response
+ *   The AI-generated response.
+ *
+ * @return void
+ */
+function search_api_ai_search_block_log_add_response($log_id, $response) {
+  $helper = search_api_ai_search_block_log_get_helper();
+  return $helper->logResponse($log_id, $response);
+}
+
+/**
+ * Update a log entry with arbitrary fields.
+ *
+ * @param int $log_id
+ *   The log entry ID.
+ * @param array $fields
+ *   Associative array of fields to update.
+ *
+ * @return void
+ */
+function search_api_ai_search_block_log_update($log_id, $fields) {
+  $helper = search_api_ai_search_block_log_get_helper();
+  return $helper->update($log_id, $fields);
+}
+
+/**
+ * Get the helper class instance.
+ *
+ * @return AiSearchBlockLogHelper
+ *   The helper class instance.
+ */
+function search_api_ai_search_block_log_get_helper() {
+  static $helper;
+
+  if (!isset($helper)) {
+    $helper = new AiSearchBlockLogHelper();
+  }
+
+  return $helper;
+}
+
+/**
+ * Callback for scoring log entries via AJAX.
+ */
+function search_api_ai_search_block_log_score_callback() {
+  $log_id = isset($_POST['log_id']) ? (int) $_POST['log_id'] : 0;
+  $score = isset($_POST['score']) ? (int) $_POST['score'] : 0;
+
+  if (!$log_id || !$score) {
+    backdrop_json_output(array('error' => 'Invalid parameters'));
+    return;
+  }
+
+  // Update the log entry with the score
+  $helper = search_api_ai_search_block_log_get_helper();
+  $helper->update($log_id, array('score' => $score));
+
+  backdrop_json_output(array(
+    'success' => TRUE,
+    'response' => t('Thank you for your feedback!'),
+  ));
+}
+
+/**
+ * Page callback to view logs.
+ */
+function search_api_ai_search_block_log_view_page() {
+  $header = array(
+    array('data' => t('ID'), 'field' => 'id', 'sort' => 'desc'),
+    array('data' => t('Date'), 'field' => 'created'),
+    array('data' => t('User'), 'field' => 'uid'),
+    array('data' => t('Block ID'), 'field' => 'block_id'),
+    array('data' => t('Query'), 'field' => 'query'),
+    array('data' => t('Response'), 'field' => 'response'),
+    array('data' => t('Score'), 'field' => 'score'),
+    array('data' => t('Expires'), 'field' => 'expiration'),
+    array('data' => t('Operations')),
+  );
+
+  $query = db_select('search_api_ai_search_block_log', 'l')
+    ->extend('PagerDefault')
+    ->extend('TableSort')
+    ->fields('l')
+    ->limit(25)
+    ->orderByHeader($header);
+
+  $results = $query->execute();
+
+  $rows = array();
+  foreach ($results as $log) {
+    $user = user_load($log->uid);
+    $username = $user ? theme('username', array('account' => $user)) : t('Anonymous');
+    
+    $operations = array();
+    $operations[] = l(t('View'), 'admin/reports/search-api-ai-search-block-log/' . $log->id);
+    if (user_access('administer search api ai search block log')) {
+      $operations[] = l(t('Edit'), 'admin/reports/search-api-ai-search-block-log/' . $log->id . '/edit');
+      $operations[] = l(t('Delete'), 'admin/reports/search-api-ai-search-block-log/' . $log->id . '/delete');
+    }
+
+    // Format expiration date
+    $expiration_display = t('Never');
+    if (!empty($log->expiration)) {
+      if ($log->expiration < REQUEST_TIME) {
+        $expiration_display = '<span style="color: red;">' . t('Expired @date', array('@date' => format_date($log->expiration, 'short'))) . '</span>';
+      } else {
+        $expiration_display = format_date($log->expiration, 'short');
+      }
+    }
+    
+    $rows[] = array(
+      $log->id,
+      format_date($log->created, 'short'),
+      $username,
+      check_plain($log->block_id),
+      truncate_utf8(check_plain($log->query), 50, TRUE, TRUE),
+      truncate_utf8(strip_tags($log->response), 100, TRUE, TRUE),
+      $log->score ? $log->score : t('Not rated'),
+      $expiration_display,
+      implode(' | ', $operations),
+    );
+  }
+
+  $output = array(
+    '#theme' => 'table',
+    '#header' => $header,
+    '#rows' => $rows,
+    '#empty' => t('No log entries found.'),
+  );
+
+  $output['pager'] = array(
+    '#theme' => 'pager',
+  );
+
+  return $output;
+}
+
+/**
+ * Page callback to view a single log entry.
+ */
+function search_api_ai_search_block_log_view_entry($log) {
+  if (!$log) {
+    backdrop_not_found();
+    return;
+  }
+
+  backdrop_set_title(t('Log Entry #@id', array('@id' => $log->id)));
+
+  $user = user_load($log->uid);
+  $username = $user ? theme('username', array('account' => $user)) : t('Anonymous');
+
+  // Format expiration date
+  $expiration_display = t('Never');
+  if (!empty($log->expiration)) {
+    if ($log->expiration < REQUEST_TIME) {
+      $expiration_display = '<span style="color: red; font-weight: bold;">' . 
+        t('Expired on @date', array('@date' => format_date($log->expiration, 'long'))) . 
+        '</span>';
+    } else {
+      $expiration_display = format_date($log->expiration, 'long');
+    }
+  }
+
+  $rows = array(
+    array(t('ID'), $log->id),
+    array(t('Block ID'), check_plain($log->block_id)),
+    array(t('User'), $username),
+    array(t('Created'), format_date($log->created, 'long')),
+    array(t('Updated'), format_date($log->changed, 'long')),
+    array(t('Expires'), $expiration_display),
+    array(t('Score'), $log->score ? $log->score : t('Not rated')),
+  );
+
+  $output = array();
+  
+  $output['info'] = array(
+    '#theme' => 'table',
+    '#rows' => $rows,
+    '#attributes' => array('class' => array('log-entry-info')),
+  );
+
+  $output['query'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Query'),
+    '#collapsible' => FALSE,
+    'content' => array(
+      '#markup' => '<div class="log-entry-query">' . check_plain($log->query) . '</div>',
+    ),
+  );
+
+  $output['response'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Response'),
+    '#collapsible' => FALSE,
+    'content' => array(
+      '#markup' => '<div class="log-entry-response">' . filter_xss_admin($log->response) . '</div>',
+    ),
+  );
+
+  if (!empty($log->feedback)) {
+    $output['feedback'] = array(
+      '#type' => 'fieldset',
+      '#title' => t('User Feedback'),
+      '#collapsible' => FALSE,
+      'content' => array(
+        '#markup' => '<div class="log-entry-feedback">' . nl2br(check_plain($log->feedback)) . '</div>',
+      ),
+    );
+  }
+
+  $output['operations'] = array(
+    '#type' => 'actions',
+  );
+
+  if (user_access('administer search api ai search block log')) {
+    $output['operations']['edit'] = array(
+      '#type' => 'link',
+      '#title' => t('Edit'),
+      '#href' => 'admin/reports/search-api-ai-search-block-log/' . $log->id . '/edit',
+      '#attributes' => array('class' => array('button')),
+    );
+
+    $output['operations']['delete'] = array(
+      '#type' => 'link',
+      '#title' => t('Delete'),
+      '#href' => 'admin/reports/search-api-ai-search-block-log/' . $log->id . '/delete',
+      '#attributes' => array('class' => array('button', 'button-danger')),
+    );
+  }
+
+  $output['operations']['back'] = array(
+    '#type' => 'link',
+    '#title' => t('Back to list'),
+    '#href' => 'admin/reports/search-api-ai-search-block-log',
+    '#attributes' => array('class' => array('button')),
+  );
+
+  return $output;
+}
+
+
+
+
