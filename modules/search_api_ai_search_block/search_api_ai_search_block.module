@@ -531,9 +531,18 @@ function search_api_ai_search_block_block_configure($delta = '', $settings = arr
     return $form;
   }
 
-  $api = new OpenAIApi($apiKey);
-  $models = $api->filterModels(['gpt']);
-
+  // Cache the model list for 1 hour to avoid slow API calls during form build.
+  $cache_id = 'search_api_ai_search_block_model_list';
+  $cache = cache_get($cache_id, 'cache');
+  if ($cache && isset($cache->data) && isset($cache->expire) && $cache->expire > REQUEST_TIME) {
+    $models = $cache->data;
+  }
+  else {
+    $api = new OpenAIApi($apiKey);
+    $models = $api->filterModels(['gpt']);
+    // Cache for 1 hour.
+    cache_set($cache_id, $models, 'cache', REQUEST_TIME + 3600);
+  }
   $form['ai_search_config']['rag_settings']['llm_model'] = array(
     '#type' => 'select',
     '#title' => t('LLM Model'),
