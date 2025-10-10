@@ -1,6 +1,6 @@
 <?php
 
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiBackend.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackend.inc';
 
 /**
  * Chat form (renders full transcript + input).
@@ -710,3 +710,4 @@ function search_api_ai_simple_chatbot_block_view($delta = '') {
     return ['subject' => NULL, 'content' => $content];
   }
 }
+
