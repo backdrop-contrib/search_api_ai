@@ -1,6 +1,6 @@
 <?php
 
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiVectorClientBase.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackendPluginBase.inc';;
 require_once 'SearchApiAiMilvusV2.php';
 use GuzzleHttp\Client as GuzzleClient;
 
@@ -334,3 +334,4 @@ class SearchApiAiMilvusVectorClient extends SearchApiAiVectorClientBase {
     return $this->milvus->describeCollection($database, $collection);
   }
 }
+
