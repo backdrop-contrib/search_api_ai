@@ -4,9 +4,9 @@
  * Search service class for Pinecone in Backdrop CMS.
  */
 
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiBackendPluginBase.inc';
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiBackendInterface.inc';
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiBackend.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackendPluginBase.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiBackendInterface.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackend.inc';
 
 class PineconeService extends SearchApiAbstractService {
 
@@ -270,3 +270,4 @@ class PineconeService extends SearchApiAbstractService {
     return in_array($type, ['embeddings']);
   }
 }
+
