@@ -1,6 +1,6 @@
 <?php
 
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiVectorClientBase.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackendPluginBase.inc';
 
 use GuzzleHttp\Client as GuzzleClient;
 use Psr\Http\Message\ResponseInterface;
