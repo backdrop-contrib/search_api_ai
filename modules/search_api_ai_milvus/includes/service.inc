@@ -4,9 +4,9 @@
  * Milvus Search API backend for Backdrop CMS.
  */
 
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiBackendPluginBase.inc';
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiBackendInterface.inc';
-require_once BACKDROP_ROOT . '/modules/contrib/search_api_ai/includes/SearchApiAiBackend.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackendPluginBase.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiBackendInterface.inc';
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackend.inc';
 
 class MilvusService extends SearchApiAbstractService implements SearchApiAiBackendInterface {
 
@@ -458,3 +458,4 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
     return search_api_ai_update_embedding_configuration_form($form, $form_state);
   }
 }
+
