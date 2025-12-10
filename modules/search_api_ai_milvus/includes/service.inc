@@ -367,7 +367,6 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
     if (!$api) {
       throw new Exception('Failed to get API client for model: ' . $model);
     }
-    
     $query_embedding = $api->embedding($text, $model_to_use);
 
     if (empty($query_embedding)) {
