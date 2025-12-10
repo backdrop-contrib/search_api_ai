@@ -369,8 +369,7 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
     $embedding_engines = array_filter($all_engines, function ($engine) {
       return isset($engine['class'])
         && class_exists($engine['class'])
-        && ($engine['class'] === 'SearchApiAiEmbeddingsBase' || is_subclass_of($engine['class'], 'SearchApiAiEmbeddingsBase'))
-        && isset($engine['model_id']);
+        && ($engine['class'] === 'SearchApiAiEmbeddingsBase' || is_subclass_of($engine['class'], 'SearchApiAiEmbeddingsBase'));
     });
 
     $options = [];
