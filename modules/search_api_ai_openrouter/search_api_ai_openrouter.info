@@ -1,0 +1,8 @@
+name = Search API AI OpenRouter
+type = module
+description = Provides OpenRouter embedding models for Search API AI. Uses OpenRouter's dedicated embeddings endpoint to list available models.
+package = Search
+backdrop = 1.x
+dependencies[] = search_api_ai
+dependencies[] = openai
+dependencies[] = openai_openrouter

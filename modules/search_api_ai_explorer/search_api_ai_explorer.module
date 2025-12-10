@@ -1,4 +1,7 @@
 <?php
+
+require_once backdrop_get_path('module', 'search_api_ai') . '/includes/SearchApiAiBackend.inc';
+
 /**
  * Implements hook_menu().
  */
@@ -51,16 +54,45 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
   }
 
   // Add Model dropdown, Chat Temperature, and Max Tokens fields directly after Index
-  $openai_config = config_get('openai.settings');
-  $apiKey = key_get_key_value($openai_config['api_key']);
-  $api = new OpenAIApi($apiKey);
-  $models = $api->filterModels(['gpt']);
+  $models = openai_get_all_chat_models();
+  
+  // Ensure $models is a flat options array for the select element
+  $flat_options = [];
+  if (!empty($models) && is_array($models)) {
+    foreach ($models as $group_label => $group_items) {
+      if (is_array($group_items)) {
+        foreach ($group_items as $k => $v) {
+          $flat_options[$k] = $v;
+        }
+      }
+      else {
+        // In case a provider returned a simple map
+        foreach ((array) $models as $k => $v) {
+          $flat_options[$k] = $v;
+        }
+        break;
+      }
+    }
+  }
+  
+  // Determine default. If the existing default isn't available, pick the first model
+  $default_model = 'gpt-3.5-turbo';
+  if (!empty($flat_options)) {
+    if (!isset($flat_options[$default_model])) {
+      reset($flat_options);
+      $default_model = key($flat_options);
+    }
+  }
+  else {
+    $default_model = 'gpt-3.5-turbo';
+  }
+  
   $form['model'] = [
     '#type' => 'select',
     '#title' => t('Model'),
-    '#options' => $models,
-    '#default_value' => 'gpt-3.5-turbo',
-    '#description' => t('Select which model to use to analyze text. See the <a href=":link">model overview</a> for details about each model.', ['@link' => 'https://platform.openai.com/docs/models/gpt-3.5']),
+    '#options' => $flat_options,
+    '#default_value' => $default_model,
+    '#description' => t('Select a model from any enabled AI provider. Available models and pricing vary by provider.'),
   ];
   $form['chat_temperature'] = [
     '#type' => 'number',
@@ -298,10 +330,29 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     return;
   }
 
-  // Retrieve OpenAI API key.
-  $openai_config = config_get('openai.settings');
-  $apiKey = key_get_key_value($openai_config['api_key']);
-  $openai = new OpenAIApi($apiKey);
+  // Get chat model config
+  $chat_model = isset($form_state['values']['model']) ? $form_state['values']['model'] : 'gpt-3.5-turbo';
+  $chat_temperature = isset($form_state['values']['chat_temperature']) ? floatval($form_state['values']['chat_temperature']) : 0.4;
+  $chat_max_tokens = isset($form_state['values']['chat_max_tokens']) ? intval($form_state['values']['chat_max_tokens']) : 1024;
+
+  // Get the appropriate API client for the selected chat model
+  if (function_exists('openai_get_api_for_model')) {
+    $openai = openai_get_api_for_model($chat_model, $stripped_chat_model);
+    // Use the stripped model ID for the API call (without provider prefix)
+    $chat_model_to_use = !empty($stripped_chat_model) ? $stripped_chat_model : $chat_model;
+  }
+  else {
+    // Fallback to OpenAI API directly
+    $openai_api_key_name = config_get('openai.settings', 'api_key');
+    $openai_api_key = key_get_key_value($openai_api_key_name);
+    $openai = new OpenAIApi($openai_api_key);
+    $chat_model_to_use = $chat_model;
+  }
+  
+  if (!$openai) {
+    backdrop_set_message(t('Unable to get API for chat model @model', ['@model' => $chat_model]), 'error');
+    return;
+  }
 
   // Get embedding model from index options, then from server options, then use default
   $embedding_model = 'text-embedding-3-small';
@@ -312,16 +363,26 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     $embedding_model = $server->options['embedding_model'];
   }
 
-  $chat_model = isset($form_state['values']['model']) ? $form_state['values']['model'] : 'gpt-3.5-turbo';
-  $chat_temperature = isset($form_state['values']['chat_temperature']) ? floatval($form_state['values']['chat_temperature']) : 0.4;
-  $chat_max_tokens = isset($form_state['values']['chat_max_tokens']) ? intval($form_state['values']['chat_max_tokens']) : 000;
-
-  // **Generate Embeddings**
+  // **Generate Embeddings using the embeddings engine**
   try {
-    $embedding_vector = $openai->embedding($query_text, $embedding_model);
-    if (empty($embedding_vector)) {
-      backdrop_set_message(t('Failed to generate embeddings.'), 'error');
-      return;
+    // Create configuration for the embedding engine
+    $embedding_configuration = [
+      'embeddings_engine' => $embedding_model,
+      'embeddings_engine_configuration' => ['dimension' => 1536], // Default dimension
+    ];
+
+    // Load the embedding engine
+    $embedding_engine = search_api_ai_load_embeddings_engine($embedding_configuration);
+
+    if (!$embedding_engine) {
+      throw new Exception('Failed to load embedding engine.');
+    }
+
+    // Create the embedding for the user query
+    $embedding_vector = $embedding_engine->generateEmbeddings($query_text);
+
+    if (!$embedding_vector) {
+      throw new Exception('Error retrieving query embedding.');
     }
   } catch (Exception $e) {
     backdrop_set_message(t('Error generating embeddings: @error', ['@error' => $e->getMessage()]), 'error');
@@ -452,9 +513,9 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   }
 
 
-  // **Call OpenAI Chat Model**
+  // **Call AI Chat Model**
   try {
-    $ai_response = $openai->chat($chat_model, $messages, $chat_temperature, $chat_max_tokens);
+    $ai_response = $openai->chat($chat_model_to_use, $messages, $chat_temperature, $chat_max_tokens);
     if (!empty($ai_response)) {
       $ai_response_text = trim($ai_response);
     } else {
@@ -474,7 +535,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       'content' => $ai_response_text,
     ];
   } catch (Exception $e) {
-    backdrop_set_message(t('OpenAI chat exception: @error', ['@error' => $e->getMessage()]), 'error');
+    backdrop_set_message(t('AI chat exception: @error', ['@error' => $e->getMessage()]), 'error');
     return;
   }
 

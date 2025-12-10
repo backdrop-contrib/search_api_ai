@@ -317,14 +317,10 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
     $index = $query->getIndex();
     $index_options = isset($index->options) ? $index->options : [];
 
-    // Model selection priority: index → service options → global config.
+    // Model selection priority: index → service options.
     $model = !empty($index_options['embedding_settings']['embeddings_engine'])
       ? $index_options['embedding_settings']['embeddings_engine']
-      :
-      (!empty($this->options['embedding_model'])
-        ? $this->options['embedding_model']
-        :
-        config('openai_embeddings.settings')->get('model'));
+      : (!empty($this->options['embedding_model']) ? $this->options['embedding_model'] : NULL);
 
     if (empty($model)) {
       watchdog(
@@ -349,14 +345,32 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
       return ['result count' => 0, 'results' => []];
     }
 
-    // Get query embedding.
-    $openai_config = config('openai.settings');
-    $api_key = key_get_key_value($openai_config->get('api_key'));
-    $openai_api = new OpenAIApi($api_key);
-    $query_embedding = $openai_api->embedding($text, $model);
+    // Get query embedding using the appropriate provider.
+    $stripped_model = NULL;
+    if (function_exists('openai_get_api_for_model')) {
+      $api = openai_get_api_for_model($model, $stripped_model);
+      $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
+      watchdog('search_api_ai_milvus', 'Search embedding: model=@model, stripped=@stripped, text_len=@len, api_class=@class', [
+        '@model' => $model,
+        '@stripped' => $stripped_model,
+        '@len' => strlen($text),
+        '@class' => get_class($api),
+      ], WATCHDOG_NOTICE);
+    }
+    else {
+      // Fallback to OpenAI API directly if function doesn't exist
+      $openai_config = config('openai.settings');
+      $api_key = key_get_key_value($openai_config->get('api_key'));
+      $api = new OpenAIApi($api_key);
+      $model_to_use = $model;
+    }
+    if (!$api) {
+      throw new Exception('Failed to get API client for model: ' . $model);
+    }
+    $query_embedding = $api->embedding($text, $model_to_use);
 
     if (empty($query_embedding)) {
-      throw new Exception('Failed to retrieve embedding from OpenAI.');
+      throw new Exception('Failed to retrieve embedding.');
     }
 
     $top_k = $query->getOption('top_k') ?? 8;
@@ -458,4 +472,3 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
     return search_api_ai_update_embedding_configuration_form($form, $form_state);
   }
 }
-

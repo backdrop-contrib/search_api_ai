@@ -28,6 +28,59 @@
     var i = 0;
     var words = text.split(' ');
 
+    // Adaptive faster streaming:
+    // - If caller passed a large "speed" (legacy code uses 150ms/word),
+    //   switch to character-by-character mode with much smaller delay.
+    // - Allow chunked DOM updates to reduce reflows when rendering by char.
+    try {
+      var cfg = getCfg();
+      var forceMode = cfg.stream_mode || null; // 'words' or 'chars' overrides
+      var charThreshold = cfg.stream_char_threshold || 100; // text length threshold
+      var charChunkSize = cfg.stream_char_chunk_size || 4; // chars per DOM update
+    } catch (e) {
+      var forceMode = null;
+      var charThreshold = 100;
+      var charChunkSize = 4;
+    }
+
+    var useCharMode = false;
+    if (forceMode === 'chars') useCharMode = true;
+    else if (forceMode === 'words') useCharMode = false;
+    else if ((speed || 0) >= 100) {
+      // Treat large speed values as a sign to switch to char mode
+      useCharMode = true;
+    }
+    else if (text.length > charThreshold) {
+      useCharMode = true;
+    }
+
+    if (useCharMode) {
+      // character-by-character streaming (chunked updates)
+      var delay = Math.max(6, Math.round((speed && speed >= 100) ? (speed / 10) : 12));
+      var out = '';
+      var j = 0;
+      var len = text.length;
+
+      (function nextChar() {
+        if (j < len) {
+          out += text.charAt(j);
+          j++;
+
+          // Update DOM in chunks for performance
+          if ((j % charChunkSize) === 0 || j === len) {
+            $el.html(renderMarkdown(out));
+          }
+
+          setTimeout(nextChar, delay);
+        } else if (typeof done === 'function') {
+          done();
+        }
+      })();
+
+      return;
+    }
+
+    // Default: word-by-word streaming (legacy behavior)
     (function next() {
       if (i < words.length) {
         var slice = words.slice(0, i + 1).join(' ');

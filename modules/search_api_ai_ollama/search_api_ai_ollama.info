@@ -1,0 +1,8 @@
+name = Search API AI Ollama
+type = module
+description = Provides Ollama embedding models for Search API AI. Returns all available Ollama models - users select which support embeddings.
+package = Search
+backdrop = 1.x
+dependencies[] = search_api_ai
+dependencies[] = openai
+dependencies[] = openai_ollama

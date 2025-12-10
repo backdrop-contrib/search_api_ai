@@ -1,0 +1,50 @@
+<?php
+
+/**
+ * @file
+ * Provides OpenRouter embedding engine integration for Search API AI.
+ */
+
+/**
+ * Implements hook_autoload_info().
+ */
+function search_api_ai_openrouter_autoload_info() {
+  return array(
+    'OpenRouterEmbeddingsEngine' => 'includes/OpenRouterEmbeddingsEngine.inc',
+  );
+}
+
+/**
+ * Implements hook_embedding_engine_info().
+ */
+function search_api_ai_openrouter_embedding_engine_info() {
+  $engines = array();
+
+  // Get OpenRouter embedding models
+  // OpenRouter has a dedicated /api/v1/models/embeddings endpoint
+  // that returns only embedding-capable models
+  $api = openai_get_api('openrouter');
+  if (!$api) {
+    watchdog('search_api_ai_openrouter', 'Failed to get OpenRouter API client', array(), WATCHDOG_WARNING);
+    return $engines;
+  }
+
+  try {
+    $models = $api->getEmbeddingModels();
+
+
+    foreach ($models as $model_id => $model_name) {
+      $engines['openrouter/' . $model_id] = array(
+        'label' => t('OpenRouter: @model', array('@model' => $model_name)),
+        'class' => 'OpenRouterEmbeddingsEngine',
+        'file' => 'includes/OpenRouterEmbeddingsEngine.inc',
+        'module' => 'search_api_ai_openrouter',
+        'model_id' => $model_id,
+      );
+    }
+  }
+  catch (Exception $e) {
+    watchdog('search_api_ai_openrouter', 'Error fetching OpenRouter embedding models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+  }
+  return $engines;
+}

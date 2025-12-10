@@ -1,0 +1,48 @@
+<?php
+
+/**
+ * @file
+ * Provides Ollama embedding engine integration for Search API AI.
+ */
+
+/**
+ * Implements hook_autoload_info().
+ */
+function search_api_ai_ollama_autoload_info() {
+  return array(
+    'OllamaEmbeddingsEngine' => 'includes/OllamaEmbeddingsEngine.inc',
+  );
+}
+
+/**
+ * Implements hook_embedding_engine_info().
+ */
+function search_api_ai_ollama_embedding_engine_info() {
+  $engines = array();
+
+  // Get all Ollama models
+  // Note: We return ALL models since Ollama doesn't reliably indicate
+  // which models support embeddings. Users must know their models.
+  $api = openai_get_api('ollama');
+  if (!$api) {
+    watchdog('search_api_ai_ollama', 'Failed to get Ollama API client', array(), WATCHDOG_WARNING);
+    return $engines;
+  }
+
+  try {
+    $models = $api->getModels();
+    foreach ($models as $model_id => $model_name) {
+      $engines['ollama/' . $model_id] = array(
+        'label' => t('Ollama: @model', array('@model' => $model_name)),
+        'class' => 'OllamaEmbeddingsEngine',
+        'file' => 'includes/OllamaEmbeddingsEngine.inc',
+        'module' => 'search_api_ai_ollama',
+        'model_id' => $model_id,
+      );
+    }
+  }
+  catch (Exception $e) {
+    watchdog('search_api_ai_ollama', 'Error fetching Ollama models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+  }
+  return $engines;
+}
