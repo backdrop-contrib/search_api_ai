@@ -7,7 +7,7 @@
 
 /**
  * Ollama embedding engine implementation.
- * Extends OpenAiEmbeddingsDefault for compatibility with Search API AI.
+ * Extends SearchApiAiEmbeddingsBase for compatibility with Search API AI.
  */
 class OllamaEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
 
