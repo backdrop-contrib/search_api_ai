@@ -151,9 +151,10 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
   ];
   foreach ($deny as $needle) {
     if (stripos($user_query, $needle) !== FALSE) {
+      $error_message = check_plain(!empty($chat_config['error_message']) ? $chat_config['error_message'] : 'Sorry, your request could not be processed.');
       $_SESSION['search_api_ai_chat_history'][] = [
         'question' => $user_query,
-        'answer'   => check_plain($chat_config['error_message']),
+        'answer'   => $error_message,
         'sources'  => '',
       ];
       $form_state['search_api_ai_stream_last'] = TRUE;
