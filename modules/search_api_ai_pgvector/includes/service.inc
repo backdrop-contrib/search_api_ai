@@ -326,7 +326,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
       throw new InvalidArgumentException('Invalid schema name: ' . $schema);
     }
     // Create schema if not exists.
-    db_query('CREATE SCHEMA IF NOT EXISTS ' . $schema);
+    db_query('CREATE SCHEMA IF NOT EXISTS ' . db_escape_table($schema));
     // Enable extension.
     db_query('CREATE EXTENSION IF NOT EXISTS vector');
 
