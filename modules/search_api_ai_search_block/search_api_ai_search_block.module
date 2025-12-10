@@ -1270,7 +1270,7 @@ ARTICLES (Markdown; multiple results are separated by lines):
     }, $text);
 
     if ($text === '') {
-      watchdog('search_api_ai_search_block', 'OpenAI returned empty text.', array(), WATCHDOG_WARNING);
+      watchdog('search_api_ai_search_block', 'AI API returned empty text.', array(), WATCHDOG_WARNING);
       return '<p>' . check_plain($no_results_message) . '</p>';
     }
 
