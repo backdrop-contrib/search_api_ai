@@ -5,10 +5,7 @@
  */
 function search_api_ai_openai_autoload_info() {
   return array(
-    'OpenAiEmbeddingsDefault' => 'includes/OpenAiEmbeddingsDefault.inc',
-    'TextEmbeddingAda002' => 'includes/TextEmbeddingAda002.inc',
-    'TextEmbedding3Small' => 'includes/TextEmbedding3Small.inc',
-    'TextEmbedding3Large' => 'includes/TextEmbedding3Large.inc',
+    'OpenAiEmbeddingsEngine' => 'includes/OpenAiEmbeddingsEngine.inc',
   );
 }
 
@@ -16,24 +13,38 @@ function search_api_ai_openai_autoload_info() {
  * Implements hook_embedding_engine_info().
  */
 function search_api_ai_openai_embedding_engine_info() {
-  return array(
-    'text-embedding-ada-002' => array(
-      'label' => t('OpenAI Text Embedding Ada 002'),
-      'class' => 'TextEmbeddingAda002',
-      'file' => 'includes/TextEmbeddingAda002.inc',
+  $engines = array();
+  $api = openai_get_api('openai');
+  if (!$api) {
+    watchdog('search_api_ai_openai', 'OpenAI API client unavailable for embedding discovery.', array(), WATCHDOG_WARNING);
+    return $engines;
+  }
+
+  try {
+    $models = $api->getEmbeddingModels();
+  }
+  catch (Exception $e) {
+    watchdog('search_api_ai_openai', 'Failed to fetch OpenAI embedding models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+    return $engines;
+  }
+
+  if (empty($models) || !is_array($models)) {
+    return $engines;
+  }
+
+  foreach ($models as $model_id => $model_name) {
+    $dimension = openai_get_embedding_dimension($model_id, 'openai');
+    $label = t('OpenAI: @model', ['@model' => $model_name]);
+    $engines[$model_id] = array(
+      'label' => $label,
+      'class' => 'OpenAiEmbeddingsEngine',
+      'file' => 'includes/OpenAiEmbeddingsEngine.inc',
       'module' => 'search_api_ai_openai',
-    ),
-    'text-embedding-3-small' => array(
-      'label' => t('OpenAI Text Embedding 3 Small'),
-      'class' => 'TextEmbedding3Small',
-      'file' => 'includes/TextEmbedding3Small.inc',
-      'module' => 'search_api_ai_openai',
-    ),
-    'text-embedding-3-large' => array(
-      'label' => t('OpenAI Text Embedding 3 Large'),
-      'class' => 'TextEmbedding3Large',
-      'file' => 'includes/TextEmbedding3Large.inc',
-      'module' => 'search_api_ai_openai',
-    ),
-  );
+      'model_id' => $model_id,
+      'model_name' => $model_name,
+      'model_dimension' => $dimension,
+    );
+  }
+
+  return $engines;
 }

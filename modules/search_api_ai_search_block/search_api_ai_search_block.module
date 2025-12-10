@@ -99,7 +99,7 @@ function search_api_ai_search_block_menu() {
  */
 function search_api_ai_search_block_submit_callback() {
   global $user;
-  
+
   // Parse POST (JSON or form).
   $payload_raw = file_get_contents('php://input');
 
@@ -122,6 +122,27 @@ function search_api_ai_search_block_submit_callback() {
   if ($query === '') {
     backdrop_json_output(['error' => 'No query provided']);
     exit();
+  }
+
+  // Basic input hardening: length cap and simple jailbreak deny-list.
+  $max_len = 1000;
+  if (mb_strlen($query) > $max_len) {
+    $query = mb_substr($query, 0, $max_len);
+  }
+  $deny = array(
+    'ignore previous instructions',
+    'system prompt',
+    'developer mode',
+    'dan mode',
+    'override instructions',
+    'repeat the system prompt',
+    'act as ',
+  );
+  foreach ($deny as $needle) {
+    if (stripos($query, $needle) !== FALSE) {
+      backdrop_json_output(['error' => 'Query rejected.']);
+      exit();
+    }
   }
 
   // Persist last query for the response block.
@@ -538,8 +559,32 @@ function search_api_ai_search_block_block_configure($delta = '', $settings = arr
     $models = $cache->data;
   }
   else {
-    $api = new OpenAIApi($apiKey);
-    $models = $api->filterModels(['gpt']);
+    // Get chat models from all enabled providers
+    $models = [];
+    if (function_exists('openai_get_all_chat_models')) {
+      $all_models = openai_get_all_chat_models();
+      // Flatten the grouped models into a simple array
+      if (!empty($all_models) && is_array($all_models)) {
+        foreach ($all_models as $group_label => $group_items) {
+          if (is_array($group_items)) {
+            foreach ($group_items as $k => $v) {
+              $models[$k] = $v;
+            }
+          }
+          else {
+            // Not grouped - add directly
+            $models[$group_label] = $group_items;
+          }
+        }
+      }
+    }
+
+    // Fallback to OpenAI only if no models found
+    if (empty($models)) {
+      $api = new OpenAIApi($apiKey);
+      $models = $api->filterModels(['gpt']);
+    }
+
     // Cache for 1 hour.
     cache_set($cache_id, $models, 'cache', REQUEST_TIME + 3600);
   }
@@ -1110,7 +1155,7 @@ ARTICLES (Markdown; multiple results are separated by lines):
 
     // Prefer rendered HTML in selected view mode (covers Paragraphs etc).
     $text = $render_node($entity);
-    // Remove HTML tags & normalize whitespace/newlines.
+    // Remove HTML tags & normalize whitespace/newlines for safe plain-text context.
     $text = strip_tags($text);
     $text = preg_replace('/\R+/', ' ', $text);
     $text = preg_replace('/[ \t]+/', ' ', $text);
@@ -1124,11 +1169,15 @@ ARTICLES (Markdown; multiple results are separated by lines):
 
     $href = $to_entity_url($entity, $r);
 
-    // Keep articles as simple HTML/Markdown-ish chunks.
-    $chunk = ($title ? "**" . check_plain($title) . "**\n\n" : '') . $text;
-    if ($href) {
-      $chunk .= "\n\n[Source](" . check_plain($href) . ")";
-    }
+    // Build fenced context block to reduce instruction-following from content.
+    $safe_title = $title ? check_plain($title) : '';
+    $safe_href  = $href ? check_plain($href) : '';
+    $chunk  = 'BEGIN_CONTEXT_DOC';
+    if ($safe_title !== '') { $chunk .= ' title=' . $safe_title; }
+    if ($safe_href  !== '') { $chunk .= ' url=' . $safe_href; }
+    $chunk .= "\n" . $text;
+    if ($safe_href !== '') { $chunk .= "\nSource: " . $safe_href; }
+    $chunk .= "\nEND_CONTEXT_DOC";
 
     $context_chunks[] = $chunk;
     $accepted++;
@@ -1150,7 +1199,7 @@ ARTICLES (Markdown; multiple results are separated by lines):
 
   $articles_md = implode("\n------------\n", $context_chunks);
 
-  // Final prompt.
+  // Final prompt with stronger default instructions.
   $prompt = str_replace(
     array('[question]', '[entity]', '[time_now]', '[date_today]', '[date_tomorrow]', '[date_yesterday]'),
     array($query, $articles_md, $time_now, $date_today, $date_tomorrow, $date_yesterday),
@@ -1163,33 +1212,39 @@ ARTICLES (Markdown; multiple results are separated by lines):
   }
 
   try {
-    $api_key = key_get_key_value(config('openai.settings')->get('api_key'));
-    if (empty($api_key)) {
-      return '<p><em>' . check_plain(t('OpenAI API key is not configured.')) . '</em></p>';
+    // Get the appropriate API client for the selected model
+    if (function_exists('openai_get_api_for_model')) {
+      $api = openai_get_api_for_model($llm_model, $stripped_model_id);
+      // Use the stripped model ID for the API call (without provider prefix)
+      $model_to_use = !empty($stripped_model_id) ? $stripped_model_id : $llm_model;
+    }
+    else {
+      // Fallback to OpenAI API directly
+      $api_key = key_get_key_value(config('openai.settings')->get('api_key'));
+      if (empty($api_key)) {
+        return '<p><em>' . check_plain(t('OpenAI API key is not configured.')) . '</em></p>';
+      }
+      $api = new OpenAIApi($api_key);
+      $model_to_use = $llm_model;
     }
 
-    // Cache the OpenAIApi client instance to avoid re-instantiating on every request.
-    static $cached_api = NULL;
-    static $cached_api_key = NULL;
-    if ($cached_api === NULL || $cached_api_key !== $api_key) {
-      $cached_api = new OpenAIApi($api_key);
-      $cached_api_key = $api_key;
+    if (!$api) {
+      return '<p><em>' . check_plain(t('Unable to initialize API for model @model.', array('@model' => $llm_model))) . '</em></p>';
     }
-    $api = $cached_api;
 
     // IMPORTANT: send prompt as a single message; model should output HTML per your instructions.
     $messages = array(array('role' => 'user', 'content' => $prompt));
 
     if (function_exists('_ai_sb_debug_payload')) {
-      _ai_sb_debug_payload('OpenAI call', array(
-        'model'         => $llm_model,
+      _ai_sb_debug_payload('AI API call', array(
+        'model'         => $model_to_use,
         'temperature'   => $llm_temp,
         'max_tokens'    => 1200,
         'messages_head' => substr($prompt, 0, 800),
       ));
     }
 
-    $resp = $api->chat($llm_model, $messages, $llm_temp, 1200, $stream);
+    $resp = $api->chat($model_to_use, $messages, $llm_temp, 1200, $stream);
 
     // If streaming was requested and we got a streaming response, return it as-is
     // so the callback can handle the streaming chunks properly
@@ -1198,6 +1253,21 @@ ARTICLES (Markdown; multiple results are separated by lines):
     }
 
     $text = $to_string($resp);
+
+    // Sanitize model HTML output with a conservative allow-list and safe links.
+    // If you want plain text only, replace with strip_tags/html_entity_decode.
+    $allowed_tags = array('p','br','ul','ol','li','a','strong','em','code','pre');
+    $text = filter_xss($text, $allowed_tags);
+    // Drop javascript: URLs and add rel attributes for safety.
+    $text = preg_replace('/href\s*=\s*"\s*javascript:[^"]*"/i', 'href="#"', $text);
+    $text = preg_replace_callback('/<a\b([^>]*)>/i', function ($m) {
+      $attrs = $m[1];
+      // Ensure rel contains noopener nofollow.
+      if (stripos($attrs, 'rel=') === FALSE) {
+        $attrs .= ' rel="nofollow noopener"';
+      }
+      return '<a' . $attrs . '>';
+    }, $text);
 
     if ($text === '') {
       watchdog('search_api_ai_search_block', 'OpenAI returned empty text.', array(), WATCHDOG_WARNING);

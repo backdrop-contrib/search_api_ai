@@ -5,3 +5,8 @@ package = Search
 backdrop = 1.x
 dependencies[] = search_api_ai
 dependencies[] = openai
+
+; Added by Backdrop CMS packaging script on 2025-10-24
+project = search_api_ai
+version = 1.x-1.0.2
+timestamp = 1761333017

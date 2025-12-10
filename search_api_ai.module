@@ -30,6 +30,7 @@ function search_api_ai_autoload_info() {
     'SearchApiAiBackend' => 'includes/SearchApiAiBackend.inc',
     'DatabaseBoostByAiSearch' => 'includes/DatabaseBoostByAiSearch.inc',
     'SearchApiAiVectorClientBase' => 'includes/SearchApiAiVectorClientBase.inc',
+    'SearchApiAiEmbeddingsBase' => 'includes/SearchApiAiEmbeddingsBase.inc',
   );
 }
 
@@ -42,7 +43,19 @@ function search_api_ai_embedding_engine_info() {
       'label' => t('OpenAI Embeddings'),
       'class' => 'OpenAiEmbeddingsDefault',
       'file'  => 'includes/OpenAiEmbeddingsDefault.inc',
-      'module'=> 'search_api_ai',
+      'module'=> 'search_api_ai_openai',
+    ],
+    'ollama' => [
+      'label' => t('Ollama Embeddings'),
+      'class' => 'OllamaEmbeddingsEngine',
+      'file'  => 'includes/OllamaEmbeddingsEngine.inc',
+      'module'=> 'search_api_ai_ollama',
+    ],
+    'openrouter' => [
+      'label' => t('OpenRouter Embeddings'),
+      'class' => 'OpenRouterEmbeddingsEngine',
+      'file'  => 'includes/OpenRouterEmbeddingsEngine.inc',
+      'module'=> 'search_api_ai_openrouter',
     ],
   ];
 }
@@ -99,17 +112,81 @@ function search_api_ai_convert_embedding($value, $original_type, $type, array $e
     return [];
   }
 
-  $openai_config = config('openai.settings');
-  $api_key_name  = $openai_config->get('api_key');
-  $api_key       = key_get_key_value($api_key_name);
-  $openai_api    = new OpenAIApi($api_key);
+  // Get the embedding engine instance based on the selected model
+  // The model format can be: provider/modelname (e.g., "ollama/nomic-embed-text") or just modelname (e.g., "text-embedding-3-small")
+  $engine_instance = NULL;
+  $provider = NULL;
+
+  watchdog('search_api_ai', '🔍 Looking up engine for model: @model', ['@model' => $model], WATCHDOG_DEBUG);
+
+  // Check if model has a provider prefix (e.g., "ollama/", "openai/")
+  if (strpos($model, '/') !== FALSE) {
+    list($provider, $model_name) = explode('/', $model, 2);
+    watchdog('search_api_ai', '🔍 Extracted provider: @provider, model_name: @name', ['@provider' => $provider, '@name' => $model_name], WATCHDOG_DEBUG);
+  }
+
+  // Only load engine for non-OpenAI providers (Ollama, OpenRouter)
+  // OpenAI models will use the API directly
+  if ($provider && $provider !== 'openai') {
+    $engine_info = search_api_ai_embedding_engine_info();
+    watchdog('search_api_ai', '🔍 Available engines: @engines', ['@engines' => print_r(array_keys($engine_info), TRUE)], WATCHDOG_DEBUG);
+
+    // Map provider names to engine IDs
+    $provider_to_engine = [
+      'ollama' => 'ollama',
+      'openrouter' => 'openrouter',
+    ];
+
+    $engine_id = isset($provider_to_engine[$provider]) ? $provider_to_engine[$provider] : $provider;
+    watchdog('search_api_ai', '🔍 Mapped to engine_id: @id', ['@id' => $engine_id], WATCHDOG_DEBUG);
+
+    if (isset($engine_info[$engine_id])) {
+      $info = $engine_info[$engine_id];
+      $engine_class = $info['class'];
+
+      watchdog('search_api_ai', '🔍 Found engine class: @class', ['@class' => $engine_class], WATCHDOG_DEBUG);
+
+      // Load the file if specified
+      if (!empty($info['file']) && !empty($info['module'])) {
+        $module_path = backdrop_get_path('module', $info['module']);
+        require_once BACKDROP_ROOT . '/' . $module_path . '/' . $info['file'];
+        watchdog('search_api_ai', '✅ Loaded file: @file', ['@file' => $module_path . '/' . $info['file']], WATCHDOG_DEBUG);
+      }
+
+      if (class_exists($engine_class)) {
+        // Extract just the model name without provider prefix
+        $model_name_only = strpos($model, '/') !== FALSE ? explode('/', $model, 2)[1] : $model;
+        watchdog('search_api_ai', '✅ Instantiating @class with model: @model', ['@class' => $engine_class, '@model' => $model_name_only], WATCHDOG_DEBUG);
+        $engine_instance = new $engine_class(['model_id' => $model_name_only]);
+      } else {
+        watchdog('search_api_ai', '❌ Class @class does not exist', ['@class' => $engine_class], WATCHDOG_ERROR);
+      }
+    } else {
+      watchdog('search_api_ai', '❌ No engine info found for engine_id: @id', ['@id' => $engine_id], WATCHDOG_ERROR);
+    }
+  }
+
+  // Use OpenAI API for OpenAI models or as fallback
+  if (!$engine_instance) {
+    watchdog('search_api_ai', '⚠️ Using OpenAI API fallback for model: @model', ['@model' => $model], WATCHDOG_WARNING);
+    $openai_config = config('openai.settings');
+    $api_key_name  = $openai_config->get('api_key');
+    $api_key       = key_get_key_value($api_key_name);
+    $openai_api    = new OpenAIApi($api_key);
+  }
 
   $chunked_vectors = [];
   foreach ($chunks as $i => $chunk) {
     $chunk_clean = StringHelper::prepareText($chunk);
     if (empty($chunk_clean)) continue;
     try {
-      $vector = $openai_api->embedding($chunk_clean, $model);
+      if ($engine_instance) {
+        $vector = $engine_instance->generateEmbeddings($chunk_clean);
+      }
+      else {
+        $vector = $openai_api->embedding($chunk_clean, $model);
+      }
+
       if (!is_array($vector) || count($vector) !== (int) $expected_dimension) {
         watchdog('search_api_ai', "❌ Invalid chunk vector size for $field_name: Expected $expected_dimension, got " . (is_array($vector) ? count($vector) : gettype($vector)), [], WATCHDOG_ERROR);
         continue;
@@ -119,7 +196,7 @@ function search_api_ai_convert_embedding($value, $original_type, $type, array $e
         'chunk'  => $chunk,
       ];
     } catch (Exception $e) {
-      watchdog('search_api_ai', "❌ OpenAI API error for $field_name: " . $e->getMessage(), [], WATCHDOG_ERROR);
+      watchdog('search_api_ai', "❌ Embedding API error for $field_name: " . $e->getMessage(), [], WATCHDOG_ERROR);
     }
   }
   if (empty($chunked_vectors)) {
@@ -292,7 +369,8 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
     $embedding_engines = array_filter($all_engines, function ($engine) {
       return isset($engine['class'])
         && class_exists($engine['class'])
-        && is_subclass_of($engine['class'], 'OpenAiEmbeddingsDefault');
+        && ($engine['class'] === 'SearchApiAiEmbeddingsBase' || is_subclass_of($engine['class'], 'SearchApiAiEmbeddingsBase'))
+        && isset($engine['model_id']);
     });
 
     $options = [];

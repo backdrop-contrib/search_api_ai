@@ -25,3 +25,13 @@ function search_api_ai_milvus_search_api_service_info() {
   ];
 }
 
+/**
+ * Validation callback for Milvus collection name.
+ */
+function search_api_ai_milvus_validate_collection_name($element, &$form_state) {
+  $value = $element['#value'];
+  if (!empty($value) && !preg_match('/^[a-zA-Z0-9_]+$/', $value)) {
+    form_error($element, t('Collection name can only contain letters, numbers, and underscores. Hyphens and other special characters are not allowed.'));
+  }
+}
+
