@@ -137,8 +137,8 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
           $vector_literal = '[' . implode(',', $values) . ']';
 
           // Use plain SQL for upsert.
-          $qualified = $this->qualify($schema, $table);
-          $sql = "INSERT INTO {$qualified} (id, backdrop_entity_id, nid, content, vector) VALUES (:id, :beid, :nid, :content, :vector::vector) "
+          // Use Backdrop curly brace syntax for table name to prevent SQL injection.
+          $sql = "INSERT INTO {" . $schema . "." . $table . "} (id, backdrop_entity_id, nid, content, vector) VALUES (:id, :beid, :nid, :content, :vector::vector) "
                . "ON CONFLICT (id) DO UPDATE SET backdrop_entity_id = EXCLUDED.backdrop_entity_id, nid = EXCLUDED.nid, content = EXCLUDED.content, vector = EXCLUDED.vector";
 
           db_query($sql, [
