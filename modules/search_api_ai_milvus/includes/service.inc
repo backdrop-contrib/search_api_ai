@@ -364,7 +364,6 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
       $api = new OpenAIApi($api_key);
       $model_to_use = $model;
     }
-    
     if (!$api) {
       throw new Exception('Failed to get API client for model: ' . $model);
     }
