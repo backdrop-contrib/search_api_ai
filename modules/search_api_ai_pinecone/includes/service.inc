@@ -29,6 +29,9 @@ class PineconeService extends SearchApiAbstractService {
    * Server configuration form (saved by the Search API backend layer).
    */
   public function configurationForm($form, &$form_state) {
+    // Add embedding engine fields from search_api_ai.
+    $form = search_api_ai_update_embedding_configuration_form($form, $form_state);
+
     // Optional namespace prefix (index ID is always appended).
     $form['namespace'] = [
       '#type' => 'textfield',
@@ -69,10 +72,6 @@ class PineconeService extends SearchApiAbstractService {
       '#step' => 1,
       '#description' => t('Default number of results; can be overridden per query.'),
     ];
-
-    // Quiet helper expectations from generic UI (harmless no-ops).
-    $form['embeddings_engine'] = ['#type' => 'value', '#value' => isset($this->options['embeddings_engine']) ? $this->options['embeddings_engine'] : ''];
-    $form['embeddings_engine_configuration'] = ['#type' => 'value', '#value' => isset($this->options['embeddings_engine_configuration']) ? $this->options['embeddings_engine_configuration'] : []];
 
     return $form;
   }
@@ -167,19 +166,79 @@ class PineconeService extends SearchApiAbstractService {
     }
 
     $index = $query->getIndex();
-    $embedding = $query->getOption('query_embedding');
+    $index_options = isset($index->options) ? $index->options : [];
+
+    // Model selection priority: index → service options.
+    $model = !empty($index_options['embedding_settings']['embeddings_engine'])
+      ? $index_options['embedding_settings']['embeddings_engine']
+      : (!empty($this->options['embedding_model']) ? $this->options['embedding_model'] : NULL);
+
+    if (empty($model)) {
+      watchdog(
+        'search_api_ai_pinecone',
+        'No model configured!',
+        [],
+        WATCHDOG_ERROR
+      );
+      return ['result count' => 0, 'results' => []];
+    }
+
+    // Extract search text.
+    $keys = $query->getKeys();
+    $text = is_array($keys)
+      ? implode(' ', array_filter($keys, function($key) {
+        return is_string($key) && $key !== 'AND' && $key !== '#conjunction';
+      }))
+      : (string) $keys;
+    $text = trim($text);
+
+    if (empty($text)) {
+      return ['result count' => 0, 'results' => []];
+    }
+
+    // Get query embedding using the appropriate provider.
+    $stripped_model = NULL;
+    if (function_exists('openai_get_api_for_model')) {
+      $api = openai_get_api_for_model($model, $stripped_model);
+      $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
+      watchdog('search_api_ai_pinecone', 'Search embedding: model=@model, stripped=@stripped, text_len=@len, api_class=@class', [
+        '@model' => $model,
+        '@stripped' => $stripped_model,
+        '@len' => strlen($text),
+        '@class' => get_class($api),
+      ], WATCHDOG_NOTICE);
+    }
+    else {
+      // Fallback to OpenAI API directly if function doesn't exist
+      $openai_config = config('openai.settings');
+      $api_key = key_get_key_value($openai_config->get('api_key'));
+      $api = new OpenAIApi($api_key);
+      $model_to_use = $model;
+    }
+
+    if (!$api) {
+      throw new Exception('Failed to get API client for model: ' . $model);
+    }
+
+    $query_embedding = $api->embedding($text, $model_to_use);
+
+    if (empty($query_embedding)) {
+      throw new Exception('Failed to retrieve embedding.');
+    }
+
     // Get expected dimension from index embedding settings, fallback to global.
     $expected_dimension = isset($index->options['embedding_settings']['embeddings_engine_configuration']['dimension'])
       ? (int) $index->options['embedding_settings']['embeddings_engine_configuration']['dimension']
       : search_api_ai_get_embedding_dimension();
-    if (empty($embedding) || !is_array($embedding) || count($embedding) !== $expected_dimension) {
-      watchdog('search_api_ai_pinecone', 'No query embedding provided or dimension mismatch.', [], WATCHDOG_ERROR);
+
+    if (empty($query_embedding) || !is_array($query_embedding) || count($query_embedding) !== $expected_dimension) {
+      watchdog('search_api_ai_pinecone', 'Query embedding dimension mismatch or empty.', [], WATCHDOG_ERROR);
       return ['result count' => 0, 'results' => []];
     }
 
     try {
       $response = $this->client->query([
-        'vector' => $embedding,
+        'vector' => $query_embedding,
         'top_k' => $query->getOption('top_k') ?? ($this->options['top_k'] ?? 5),
         'include_metadata' => TRUE,
         'namespace' => $this->getNamespace($index),
@@ -270,4 +329,3 @@ class PineconeService extends SearchApiAbstractService {
     return in_array($type, ['embeddings']);
   }
 }
-
