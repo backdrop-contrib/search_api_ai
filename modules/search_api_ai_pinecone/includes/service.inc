@@ -171,7 +171,7 @@ class PineconeService extends SearchApiAbstractService {
     // Model selection priority: index → service options.
     $model = !empty($index_options['embedding_settings']['embeddings_engine'])
       ? $index_options['embedding_settings']['embeddings_engine']
-      : (!empty($this->options['embedding_model']) ? $this->options['embedding_model'] : NULL);
+      : (!empty($this->options['embeddings_engine']) ? $this->options['embeddings_engine'] : NULL);
 
     if (empty($model)) {
       watchdog(
