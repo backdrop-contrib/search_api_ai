@@ -212,7 +212,19 @@ class PineconeService extends SearchApiAbstractService {
       // Fallback to OpenAI API directly if function doesn't exist.
       $openai_config = config('openai.settings');
       $api_key = key_get_key_value($openai_config->get('api_key'));
-      $api = new OpenAIApi($api_key);
+      // Check if OpenAIApi class exists and API key is valid before instantiation.
+      if (!class_exists('OpenAIApi')) {
+        throw new Exception('OpenAIApi class not found. Please ensure the OpenAI PHP client is installed and included.');
+      }
+      if (empty($api_key)) {
+        throw new Exception('OpenAI API key is missing or invalid.');
+      }
+      try {
+        $api = new OpenAIApi($api_key);
+      }
+      catch (Exception $e) {
+        throw new Exception('Failed to instantiate OpenAIApi: ' . $e->getMessage());
+      }
       $model_to_use = $model;
     }
 
