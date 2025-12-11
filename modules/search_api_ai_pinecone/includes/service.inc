@@ -209,7 +209,7 @@ class PineconeService extends SearchApiAbstractService {
       ], WATCHDOG_DEBUG);
     }
     else {
-      // Fallback to OpenAI API directly if function doesn't exist
+      // Fallback to OpenAI API directly if function doesn't exist.
       $openai_config = config('openai.settings');
       $api_key = key_get_key_value($openai_config->get('api_key'));
       $api = new OpenAIApi($api_key);
