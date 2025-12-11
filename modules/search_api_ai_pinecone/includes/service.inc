@@ -222,7 +222,7 @@ class PineconeService extends SearchApiAbstractService {
 
     $query_embedding = $api->embedding($text, $model_to_use);
 
-    if (empty($query_embedding)) {
+    if ($query_embedding === false || $query_embedding === null || !is_array($query_embedding)) {
       throw new Exception('Failed to retrieve embedding.');
     }
 
