@@ -206,7 +206,7 @@ class PineconeService extends SearchApiAbstractService {
         '@stripped' => $stripped_model,
         '@len' => strlen($text),
         '@class' => get_class($api),
-      ], WATCHDOG_NOTICE);
+      ], WATCHDOG_DEBUG);
     }
     else {
       // Fallback to OpenAI API directly if function doesn't exist
