@@ -1108,3 +1108,4 @@ function _search_api_ai_simple_chatbot_safe_chat($openai, $model, $messages, $te
   return NULL;
 }
 
+
