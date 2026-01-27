@@ -114,9 +114,9 @@ async function run() {
 
     // Create a PR
     const prTitle = `Automated: apply @copilot changes (${new Date().toISOString().slice(0,10)})`;
-    // Sanitize comment content to prevent markdown injection
-    const sanitizedComment = comment.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const prBody = `This PR was opened automatically from a @copilot implement comment by @${commenter}.\n\nOriginal comment:\n\n> ${sanitizedComment.split('\n').join('\n> ')}`;
+    // Render original comment in a fenced code block to prevent markdown injection
+    const escapedCommentForCodeBlock = comment.replace(/```/g, '\\`\\`\\`');
+    const prBody = `This PR was opened automatically from a @copilot implement comment by @${commenter}.\n\nOriginal comment:\n\n\`\`\`\n${escapedCommentForCodeBlock}\n\`\`\``;
 
     const pr = await octokit.rest.pulls.create({
       owner, repo,
