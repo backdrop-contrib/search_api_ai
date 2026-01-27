@@ -336,7 +336,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
       $schema = 'public';
     }
     // Create schema if not exists.
-    db_query('CREATE SCHEMA IF NOT EXISTS ' . $schema);
+    db_query('CREATE SCHEMA IF NOT EXISTS ' . db_escape_table($schema));
     // Enable extension.
     db_query('CREATE EXTENSION IF NOT EXISTS vector');
 
@@ -406,3 +406,4 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     }
   }
 }
+
