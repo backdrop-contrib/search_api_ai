@@ -1,0 +1,7 @@
+block.settings.search_api_ai_chat_form:
+  type: block_settings
+  label: 'Search API AI: Chat form block'
+  mapping:
+    index:
+      type: string
+      label: Index
