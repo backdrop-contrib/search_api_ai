@@ -129,7 +129,9 @@ function search_api_ai_simple_chatbot_clear_history_submit($form, &$form_state) 
 function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
   // 0) Clear-history fallback if it sneaks in here.
   if (!empty($form_state['values']['clear_history']) || !empty($form_state['input']['clear_history'])) {
-    return search_api_ai_simple_chatbot_clear_history_submit($form, $form_state);
+    // Call the clear handler (void) and then return to stop processing.
+    search_api_ai_simple_chatbot_clear_history_submit($form, $form_state);
+    return;
   }
 
   $chat_config = config_get('search_api_ai_simple_chatbot.settings', 'chat_config') ?: [];
@@ -208,7 +210,9 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
   // Namespace / collection.
   if ($server->class === 'pinecone') {
     $pinecone_service = new PineconeService($server);
-    $collection = trim($pinecone_service->getNamespace($index));
+    // Ensure analyzer sees a SearchApiIndex instance (we already validated $index above).
+    $index_obj = $index; /* @var SearchApiIndex $index_obj */
+    $collection = trim($pinecone_service->getNamespace($index_obj));
     if (strpos($collection, ':') === 0) { $collection = substr($collection, 1); }
   } else {
     $collection = !empty($server->options['collection']) ? $server->options['collection'] : $index->machine_name;
@@ -216,87 +220,258 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
 
   // 2) Get chat model config
   $chat_model = $chat_config['chat_model'] ?? 'gpt-4';
-  $embedding_model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
 
-  // If embedding model doesn't have a provider prefix, try to detect it
-  if (strpos($embedding_model, '/') === FALSE) {
-    // Check if it's an Ollama model (ends with :latest or :version)
-    if (strpos($embedding_model, ':') !== FALSE || strpos($embedding_model, 'nomic') !== FALSE || strpos($embedding_model, 'embed') !== FALSE) {
-      $embedding_model = 'ollama/' . $embedding_model;
+  // Determine embedding model: prefer the index's configured embedding engine
+  // (newer index configurations store this under embedding_settings), then
+  // fall back to server-level settings, then older chatbot config, then a default.
+  $embedding_model = NULL;
+  if (!empty($index->options['embedding_settings']['embeddings_engine'])) {
+    $embedding_model = $index->options['embedding_settings']['embeddings_engine'];
+  }
+  elseif (!empty($index->options['embeddings_engine'])) {
+    // older key used by some sites
+    $embedding_model = $index->options['embeddings_engine'];
+  }
+  elseif (!empty($server->options['embedding_model'])) {
+    $embedding_model = $server->options['embedding_model'];
+  }
+  // Backwards-compat fallback: old chatbot config might have an embedding_model.
+  if (empty($embedding_model)) {
+    $embedding_model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
+  }
+
+  // Determine dimension using provider helper when available (keeps parity
+  // with the explorer/search_block logic).
+  $dimension = 1536;
+  if (function_exists('openai_get_embedding_dimension')) {
+    $provider_id = 'openai';
+    $model_id = $embedding_model;
+    if (strpos($embedding_model, '/') !== FALSE) {
+      list($provider_id, $model_id) = explode('/', $embedding_model, 2);
+    }
+    try {
+      $dimension = openai_get_embedding_dimension($model_id, $provider_id);
+    } catch (Exception $e) {
+      // Keep default if helper fails.
     }
   }
 
-  // Get the appropriate API client for the selected chat model
-  if (function_exists('openai_get_api_for_model')) {
-    $openai = openai_get_api_for_model($chat_model, $stripped_chat_model);
-    // Use the stripped model ID for the API call (without provider prefix)
-    $chat_model_to_use = !empty($stripped_chat_model) ? $stripped_chat_model : $chat_model;
-  }
-  else {
-    // Fallback to OpenAI API directly
-    $openai_api_key_name = config_get('openai.settings', 'api_key');
-    $openai_api_key = key_get_key_value($openai_api_key_name);
-    $openai = new OpenAIApi($openai_api_key);
-    $chat_model_to_use = $chat_model;
+  // Get the appropriate API client for the selected chat model using compatibility helper.
+  $stripped_chat_model = NULL;
+  $openai = search_api_ai_openai_client_for_model($chat_model, $stripped_chat_model);
+  $chat_model_to_use = !empty($stripped_chat_model) ? $stripped_chat_model : $chat_model;
+  if (!$openai) {
+    // Final fallback to legacy instantiation
+    try {
+      $openai_api_key_name = config_get('openai.settings', 'api_key');
+      $openai_api_key = key_get_key_value($openai_api_key_name);
+      if (!empty($openai_api_key) && class_exists('OpenAIApi')) {
+        $openai = new OpenAIApi($openai_api_key);
+        $chat_model_to_use = $chat_model;
+      }
+    }
+    catch (Exception $e) {
+      $openai = NULL;
+    }
   }
 
-  if (!$openai) {
-    watchdog('search_api_ai_simple_chatbot', 'Unable to get API for chat model @model', ['@model' => $chat_model], WATCHDOG_ERROR);
-    backdrop_json_output(['error' => 'Chat model configuration error.']);
-    backdrop_exit();
+  // Provider-aware logging: try to record the start of a chat/embedding operation
+  $log_api = NULL;
+  if (is_object($openai) && method_exists($openai, 'recordLog')) {
+    $log_api = $openai;
+  }
+  else {
+    // Attempt to resolve a provider-scoped API client for the embedding/chat model
+    try {
+      $probe_stripped = NULL;
+      $probe = search_api_ai_openai_client_for_model($chat_model, $probe_stripped);
+      if ($probe && method_exists($probe, 'recordLog')) {
+        $log_api = $probe;
+      }
+    } catch (Exception $e) {
+      // ignore
+    }
+  }
+  if ($log_api) {
+    try {
+      // Log initial chat invocation (no response yet)
+      $log_api->recordLog('simple_chatbot_start', $chat_model_to_use, ['query' => $user_query], NULL, TRUE, 0);
+    } catch (Exception $e) {
+      watchdog('search_api_ai_simple_chatbot', 'Failed to record start log: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+    }
   }
 
   // 3) Embedding
   try {
-    // Create configuration for the embedding engine
+    // Build embedding engine configuration (matches Explorer logic).
     $embedding_configuration = [
       'embeddings_engine' => $embedding_model,
-      'embeddings_engine_configuration' => ['dimension' => 1536], // Default dimension
+      'embeddings_engine_configuration' => ['dimension' => (int) $dimension],
     ];
 
-    // Load the embedding engine
+    // Attempt to load a Search API AI embedding engine (provider adapters register these).
     $embedding_engine = search_api_ai_load_embeddings_engine($embedding_configuration);
 
-    if (!$embedding_engine) {
-      throw new Exception('Failed to load embedding engine.');
+    // Provider-aware client fallback for embeddings when no engine instance is available.
+    $embedding_vector = NULL;
+    $stripped = NULL;
+    $client = NULL;
+
+    if ($embedding_engine) {
+      // Preferred path: engine instance (handles provider details internally).
+      $embedding_vector = $embedding_engine->generateEmbeddings($user_query);
+    }
+    else {
+      // Try to resolve a provider client for this embedding model and call embedding API directly.
+      try {
+        $client = search_api_ai_openai_client_for_model($embedding_model, $stripped);
+      } catch (Exception $e) {
+        watchdog('search_api_ai_simple_chatbot', 'search_api_ai_openai_client_for_model() threw: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+      }
+
+      if ($client) {
+        // Normalize model id for client calls (strip provider prefix if helper returned a stripped id).
+        $model_to_use = !empty($stripped) ? $stripped : $embedding_model;
+        if (strpos($model_to_use, '/') !== FALSE) {
+          $parts = explode('/', $model_to_use, 2);
+          $model_to_use = end($parts);
+        }
+
+        // Use the generic helper which tries common client shapes.
+        if (function_exists('search_api_ai_openai_call_embedding')) {
+          try {
+            $embedding_vector = search_api_ai_openai_call_embedding($client, $user_query, $model_to_use);
+          } catch (Exception $e) {
+            watchdog('search_api_ai_simple_chatbot', 'Direct client embedding call failed: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+          }
+        }
+      }
     }
 
-    // Create the embedding for the user query
-    $embedding_vector = $embedding_engine->generateEmbeddings($user_query);
-
-    if (!$embedding_vector) {
-      throw new Exception('Error retrieving query embedding.');
-    }
-  } catch (Exception $e) {
-    watchdog_exception('search_api_ai_simple_chatbot', $e);
-    $_SESSION['search_api_ai_chat_history'][] = [
-      'question' => $user_query,
-      'answer'   => check_plain($chat_config['error_message']),
-      'sources'  => '',
-    ];
-    $form_state['search_api_ai_stream_last'] = TRUE;
-    $form_state['rebuild'] = TRUE;
-    return;
-  }
-
-  // 4) Vector search
-  try {
-    if ($server->class === 'pinecone') {
-      $vector_client = new SearchApiAiPineconeVectorClient($server->options);
-      $query_options = [
-        'vector'           => $embedding_vector,
-        'top_k'            => (int) ($chat_config['top_k'] ?? 8),
-        'namespace'        => $collection,
-        'include_metadata' => TRUE,
+    // Validate embedding vector
+    if (empty($embedding_vector) || !is_array($embedding_vector)) {
+      // Log and return a friendly error; record finish log if available.
+      watchdog('search_api_ai_simple_chatbot', 'Embedding generation failed or returned invalid data for model @m', ['@m' => $embedding_model], WATCHDOG_ERROR);
+      if (!empty($log_api) && method_exists($log_api, 'recordLog')) {
+        try { $log_api->recordLog('simple_chatbot_finish', $chat_model_to_use, ['query' => $user_query, 'error' => 'embedding_generation_failed'], NULL, TRUE, 2); } catch (Exception $e) { watchdog('search_api_ai_simple_chatbot', 'Failed to record finish log: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING); }
+      }
+      $_SESSION['search_api_ai_chat_history'][] = [
+        'question' => $user_query,
+        'answer'   => check_plain($chat_config['error_message'] ?? 'Sorry, something went wrong.'),
+        'sources'  => '',
       ];
-      $vector_results = $vector_client->query($query_options);
-    } else {
-      $milvus_settings = is_array($server->options) ? $server->options : [];
-      $vector_client = new SearchApiAiMilvusVectorClient($milvus_settings);
-      $outputFields = ['content','entity_id','entity_type','field_name','field_delta','bundle','backdrop_entity_id','backdrop_long_id','nid'];
-      $database = $milvus_settings['database'] ?? 'default';
-      $top_k    = (int) ($chat_config['top_k'] ?? 8);
-      $vector_results = $vector_client->search($collection, $embedding_vector, $top_k, $outputFields, $database, '');
+      $form_state['search_api_ai_stream_last'] = TRUE;
+      $form_state['rebuild'] = TRUE;
+      return;
+    }
+
+    // Perform vector search using the appropriate backend client (Explorer parity).
+    $vector_results = [];
+    $backend_class = $server->class;
+
+    if ($backend_class === 'pinecone' || $backend_class === 'pinecone_service') {
+      $pinecone_service = new PineconeService($server);
+      $namespace = trim($pinecone_service->getNamespace($index));
+      if (strpos($namespace, ':') === 0) { $namespace = substr($namespace, 1); }
+      if (!$namespace) {
+        watchdog('search_api_ai_simple_chatbot', 'Failed to retrieve namespace for Pinecone.', [], WATCHDOG_ERROR);
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
+      }
+      $query_options = [ 'vector' => $embedding_vector, 'top_k' => (int) ($chat_config['top_k'] ?? 8), 'namespace' => $namespace, 'include_metadata' => TRUE ];
+      $client = new SearchApiAiPineconeVectorClient($server->options);
+      try {
+        $vector_results = $client->query($query_options);
+        if (empty($vector_results['matches'])) {
+          watchdog('search_api_ai_simple_chatbot', 'No relevant results found in Pinecone for query "@q"', ['@q' => $user_query], WATCHDOG_NOTICE);
+        }
+      } catch (Exception $e) {
+        watchdog('search_api_ai_simple_chatbot', 'Error querying Pinecone: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
+      }
+    }
+    elseif ($backend_class === 'milvus') {
+      $milvus_service = new MilvusService($server);
+      $collection = $milvus_service->getCollection($index);
+      if (!$collection) {
+        watchdog('search_api_ai_simple_chatbot', 'Failed to retrieve collection for Milvus.', [], WATCHDOG_ERROR);
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
+      }
+      $database = isset($server->options['database']) ? $server->options['database'] : 'default';
+      $query_options = [ 'vector' => $embedding_vector, 'top_k' => (int) ($chat_config['top_k'] ?? 8), 'collection' => $collection, 'database' => $database, 'output_fields' => ['content','nid','title','backdrop_entity_id','backdrop_long_id','field_name','server_id','index_id'] ];
+      $client = new SearchApiAiMilvusVectorClient($server->options);
+      try {
+        $vector_results = $client->query($query_options);
+        if (empty($vector_results)) {
+          watchdog('search_api_ai_simple_chatbot', 'No relevant results found in Milvus for query "@q"', ['@q' => $user_query], WATCHDOG_NOTICE);
+        }
+      } catch (Exception $e) {
+        watchdog('search_api_ai_simple_chatbot', 'Error querying Milvus: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
+      }
+    }
+    else {
+      watchdog('search_api_ai_simple_chatbot', 'This backend is not supported for vector search: @b', ['@b' => $backend_class], WATCHDOG_ERROR);
+      // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
     }
   } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
@@ -310,7 +485,8 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
     return;
   }
 
-  // 5) Build CONTEXT with strong fences; keep UI anchors for later.
+
+  // 4) Build CONTEXT with strong fences; keep UI anchors for later.
   $score_threshold   = (float) ($chat_config['score_threshold'] ?? 0.5);
   $context_snippets  = [];   // for LLM (plain text, fenced, with Source: URL)
   $context_anchors   = [];   // anchors we provided (for display + validation)
@@ -395,15 +571,34 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
 
   // 7) LLM call
   try {
-    $ai_response = $openai->chat(
+    // Use a safe wrapper that retries transient OpenAI transport errors (network
+    // interruptions, proxied websocket resets, etc.). This prevents a single
+    // transient TCP read error from failing the whole chat flow.
+    $ai_response = _search_api_ai_simple_chatbot_safe_chat(
+      $openai,
       $chat_model_to_use,
       $messages,
-      (float) ($chat_config['temperature'] ?? 0.3), // keep conservative
+      (float) ($chat_config['temperature'] ?? 0.3),
       (int) ($chat_config['max_tokens'] ?? 1024)
     );
 
+    if ($ai_response === NULL) {
+      // The safe wrapper already logged the underlying exception(s). Show a user-friendly error.
+      throw new Exception('AI service temporarily unavailable. Please try again shortly.');
+    }
+
+    // Log the successful chat response (if provider logging is available)
+    if (!empty($log_api) && method_exists($log_api, 'recordLog')) {
+      try {
+        // We log the chat finish with some metadata; provider may store response separately
+        $log_api->recordLog('simple_chatbot_finish', $chat_model_to_use, ['query' => $user_query, 'response_length' => is_string($ai_response) ? strlen($ai_response) : 0], NULL, TRUE, 1);
+      } catch (Exception $e) {
+        watchdog('search_api_ai_simple_chatbot', 'Failed to record finish log: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+      }
+    }
+
     // 8) Extract any kb-source anchors the model copied, then strip them for streaming text
-    preg_match_all('/<a\b[^>]*class=["\']kb-source["\'][^>]*>.*?<\/a>/i', $ai_response, $m_used);
+    preg_match_all('/<a\\b[^>]*class=["\']kb-source["\'][^>]*>.*?<\\/a>/i', $ai_response, $m_used);
     $used_anchors = !empty($m_used[0]) ? array_unique($m_used[0]) : [];
     // Only allow anchors that we actually provided in this turn.
     if (!empty($used_anchors) && !empty($context_anchors)) {
@@ -412,11 +607,11 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
     }
 
     // 8a) Remove kb-source anchors from the main body
-    $main_html = preg_replace('/<a\b[^>]*class=["\']kb-source["\'][^>]*>.*?<\/a>/i', '', $ai_response);
+    $main_html = preg_replace('/<a\\b[^>]*class=["\']kb-source["\'][^>]*>.*?<\\/a>/i', '', $ai_response);
 
     // 8b) For all other anchors, if absolute (http/https), replace with the href so it remains as visible text
     $main_html = preg_replace_callback(
-      '/<a\b[^>]*href=["\'](https?:\/\/[^"\']+)["\'][^>]*>.*?<\/a>/i',
+      '/<a\\b[^>]*href=["\'](https?:\/\/[^"\']+)["\'][^>]*>.*?<\\/a>/i',
       function ($m) { return $m[1]; },
       $main_html
     );
@@ -477,25 +672,52 @@ function search_api_ai_simple_chatbot_get_query_vectors($index, $user_query, $ch
   if (strpos($namespace, ':') === 0) $namespace = substr($namespace, 1);
 
   try {
-    // Create configuration for the embedding engine
-    $model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
+    // Determine embedding model from the provided index first (same logic
+    // as the main chat submit), then fall back to chat_config or default.
+    $model = NULL;
+    if (!empty($index->options['embeddings_engine'])) {
+      $model = $index->options['embeddings_engine'];
+    }
+    elseif (!empty($index->options['embeddings_engine_configuration']['engine'])) {
+      $model = $index->options['embeddings_engine_configuration']['engine'];
+    }
+    if (empty($model)) {
+      $model = $chat_config['embedding_model'] ?? 'text-embedding-3-small';
+    }
+
     $embedding_configuration = [
       'embeddings_engine' => $model,
       'embeddings_engine_configuration' => ['dimension' => 1536], // Default dimension
     ];
 
-    // Load the embedding engine
+    // Load the embedding engine with fallbacks similar to the main submit.
     $embedding_engine = search_api_ai_load_embeddings_engine($embedding_configuration);
-
+    if (!$embedding_engine && strpos($model, '/') === FALSE) {
+      foreach (['openai', 'ollama', 'openrouter'] as $prov) {
+        $try_conf = $embedding_configuration;
+        $try_conf['embeddings_engine'] = $prov . '/' . $model;
+        $embedding_engine = search_api_ai_load_embeddings_engine($try_conf);
+        if ($embedding_engine) {
+          watchdog('search_api_ai_simple_chatbot', 'Embedding engine resolved in helper using fallback @m', ['@m' => $prov . '/' . $model], WATCHDOG_NOTICE);
+          break;
+        }
+      }
+    }
     if (!$embedding_engine) {
       throw new Exception('Failed to load embedding engine.');
     }
 
-    // Create the embedding for the user query
-    $embedding = $embedding_engine->generateEmbeddings($user_query);
-
-    if (!$embedding) {
-      throw new Exception('Error retrieving query embedding.');
+    // Generate the embedding vector for the query in this helper.
+    try {
+      $embedding = $embedding_engine->generateEmbeddings($user_query);
+      if (empty($embedding) || !is_array($embedding)) {
+        watchdog('search_api_ai_simple_chatbot', 'Embedding engine returned invalid result in helper', [], WATCHDOG_ERROR);
+        return NULL;
+      }
+    }
+    catch (Exception $e) {
+      watchdog_exception('search_api_ai_simple_chatbot', $e);
+      return NULL;
     }
   } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
@@ -721,12 +943,8 @@ function search_api_ai_simple_chatbot_block_configure($delta = '') {
       '#default_value' => $chat_config['max_length'] ?? 512,
     ];
 
-    $form['chat_config']['advanced']['embedding_model'] = [
-      '#type'          => 'select',
-      '#title'         => t('Embedding model'),
-      '#options'       => _search_api_ai_simple_chatbot_get_embedding_models(),
-      '#default_value' => $chat_config['embedding_model'] ?? 'text-embedding-ada-002',
-    ];
+    // Embedding model selection removed from UI: embedding model is derived
+    // from the selected index's embedding engine configuration.
 
     $form['chat_config']['advanced']['debug'] = [
       '#type'          => 'checkbox',
@@ -763,7 +981,7 @@ function search_api_ai_simple_chatbot_block_save($delta = '', $edit = []) {
       'top_k'               => $edit['chat_config']['advanced']['top_k'],
       'score_threshold'     => $edit['chat_config']['advanced']['score_threshold'],
       'max_length'          => $edit['chat_config']['advanced']['max_length'],
-      'embedding_model'     => $edit['chat_config']['advanced']['embedding_model'],
+      // Do not save embedding_model here; it is taken from the index settings.
       'debug'               => !empty($edit['chat_config']['advanced']['debug']),
     ];
 
@@ -803,6 +1021,8 @@ function search_api_ai_simple_chatbot_block_view($delta = '') {
 
     return ['subject' => NULL, 'content' => $content];
   }
+  // Explicit NULL return for other deltas (satisfies analyzer expecting return path).
+  return NULL;
 }
 
 /**
@@ -819,15 +1039,30 @@ function _search_api_ai_simple_chatbot_get_embedding_models() {
     }
 
     try {
-      $provider_api = openai_get_api($provider_id);
-      if (!$provider_api || !method_exists($provider_api, 'getEmbeddingModels')) {
+      // Resolve provider client via compatibility helper. We pass a dummy model
+      // so the helper returns a provider-scoped client when available.
+      $stripped = NULL;
+      $provider_api = search_api_ai_openai_client_for_model($provider_id . '/__probe__', $stripped);
+      if (!$provider_api) {
         continue;
       }
 
-      $provider_models = $provider_api->getEmbeddingModels();
+      // Try to call provider-specific model listing for embeddings.
+      $provider_models = NULL;
+      if (is_object($provider_api) && method_exists($provider_api, 'getEmbeddingModels')) {
+        $provider_models = $provider_api->getEmbeddingModels();
+      }
+      elseif (is_object($provider_api) && method_exists($provider_api, 'getModels')) {
+        $provider_models = $provider_api->getModels();
+      }
+      elseif (is_object($provider_api) && method_exists($provider_api, 'listModels')) {
+        $provider_models = $provider_api->listModels();
+      }
+
       if (!empty($provider_models)) {
         foreach ($provider_models as $model_id => $model_name) {
-          $options[$model_id] = $model_name . ' (' . openai_get_provider_label($provider_id) . ')';
+          $provider_label = function_exists('openai_get_provider_label') ? openai_get_provider_label($provider_id) : ucfirst($provider_id);
+          $options[$model_id] = $model_name . ' (' . $provider_label . ')';
         }
       }
     }
@@ -850,3 +1085,80 @@ function _search_api_ai_simple_chatbot_get_embedding_models() {
   return $options;
 }
 
+/**
+ * Safe wrapper for calling the provider chat method with retries for
+ * transient transport errors.
+ *
+ * @param object $openai
+ * @param string $model
+ * @param array $messages
+ * @param float $temperature
+ * @param int $max_tokens
+ * @param int $max_retries
+ *   Number of retries on transient errors (default 2).
+ *
+ * @return mixed
+ *   The raw ai response string/object on success, or NULL on repeated failure.
+ */
+function _search_api_ai_simple_chatbot_safe_chat($openai, $model, $messages, $temperature, $max_tokens, $max_retries = 2) {
+  $attempt = 0;
+  $lastException = NULL;
+
+  while ($attempt <= $max_retries) {
+    try {
+      if (!is_object($openai)) {
+        throw new Exception('Invalid OpenAI client');
+      }
+      // Prefer common method name 'chat' used by the compatibility wrapper.
+      if (method_exists($openai, 'chat')) {
+        return $openai->chat($model, $messages, $temperature, $max_tokens);
+      }
+      // Fallback attempts for alternative client shapes could be added here.
+      if (method_exists($openai, 'createChat') || method_exists($openai, 'chatCreate') || method_exists($openai, 'requestChat')) {
+        // Attempt a generic call signature if available
+        if (method_exists($openai, 'createChat')) {
+          return $openai->createChat(['model' => $model, 'messages' => $messages, 'temperature' => $temperature, 'max_tokens' => $max_tokens]);
+        }
+        if (method_exists($openai, 'chatCreate')) {
+          return $openai->chatCreate($model, $messages, $temperature, $max_tokens);
+        }
+        if (method_exists($openai, 'requestChat')) {
+          return $openai->requestChat($model, $messages, $temperature, $max_tokens);
+        }
+      }
+
+      // If we reach here, client's chat API is not recognized.
+      throw new Exception('OpenAI client does not expose a supported chat method.');
+    }
+    catch (Throwable $e) {
+      $lastException = $e;
+      // Detect transient transport/network errors by message content or known exception types.
+      $msg = $e->getMessage();
+      $isTransient = FALSE;
+      if (preg_match('/(read tcp|wsarecv|connection.*reset|timed out|ETIMEDOUT|ECONNRESET|503|502|504|temporar|reset by peer|connection refused|broken pipe)/i', $msg)) {
+        $isTransient = TRUE;
+      }
+
+      // For non-transient errors, do not retry.
+      if (!$isTransient) {
+        break;
+      }
+
+      // Log and backoff before retrying.
+      watchdog('search_api_ai_simple_chatbot', 'Transient OpenAI transport error (attempt @n): @m', ['@n' => $attempt + 1, '@m' => $msg], WATCHDOG_WARNING);
+
+      // Exponential backoff (500ms, 1s, 2s ...)
+      $sleep_us = (int) (500000 * pow(2, $attempt));
+      usleep($sleep_us);
+      $attempt++;
+      continue;
+    }
+  }
+
+  if ($lastException) {
+    // Final log of the underlying exception
+    watchdog_exception('search_api_ai_simple_chatbot', $lastException);
+  }
+
+  return NULL;
+}

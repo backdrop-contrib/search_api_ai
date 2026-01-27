@@ -41,21 +41,21 @@ function search_api_ai_embedding_engine_info() {
   return [
     'openai' => [
       'label' => t('OpenAI Embeddings'),
-      'class' => 'OpenAiEmbeddingsDefault',
-      'file'  => 'includes/OpenAiEmbeddingsDefault.inc',
+      'class' => 'OpenAiEmbeddingsEngine',
+      'file'  => 'includes/OpenAiEmbeddingsEngine.inc',
       'module'=> 'search_api_ai_openai',
     ],
     'ollama' => [
       'label' => t('Ollama Embeddings'),
       'class' => 'OllamaEmbeddingsEngine',
       'file'  => 'includes/OllamaEmbeddingsEngine.inc',
-      'module'=> 'search_api_ai_ollama',
+      'module'=> 'search_api_ai',
     ],
     'openrouter' => [
       'label' => t('OpenRouter Embeddings'),
       'class' => 'OpenRouterEmbeddingsEngine',
       'file'  => 'includes/OpenRouterEmbeddingsEngine.inc',
-      'module'=> 'search_api_ai_openrouter',
+      'module'=> 'search_api_ai',
     ],
   ];
 }
@@ -80,6 +80,156 @@ function search_api_ai_get_embedding_dimension() {
   return 1536;
 }
 
+/**
+ * Resolve an OpenAI API client for a given model, with compatibility fallbacks.
+ *
+ * Tries, in order:
+ * - openai_get_api_for_model() helper (newer OpenAI module)
+ * - openai_get_api() helper (multi-provider OpenAI module)
+ * - Legacy OpenAIApi instantiation using key stored in openai.settings
+ *
+ * Returns the client object or NULL. If provided, $stripped_model will be
+ * filled with the model ID to use for API calls (without provider prefix).
+ */
+function search_api_ai_openai_client_for_model($model, & $stripped_model = NULL) {
+  $client = NULL;
+  $stripped_model = NULL;
+
+  // New helper that knows providers
+  if (function_exists('openai_get_api_for_model')) {
+    try {
+      $client = openai_get_api_for_model($model, $stripped_model);
+      if ($client !== NULL) {
+        return $client;
+      }
+    }
+    catch (Exception $e) {
+      watchdog('search_api_ai', 'openai_get_api_for_model() threw: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+      $client = NULL;
+    }
+  }
+
+  // Older multi-provider helper
+  if (function_exists('openai_get_api')) {
+    try {
+      $provider = 'openai';
+      $model_id = $model;
+      if (strpos($model, '/') !== FALSE) {
+        list($provider, $model_id) = explode('/', $model, 2);
+      }
+      $client = openai_get_api($provider);
+      $stripped_model = $model_id;
+      return $client;
+    }
+    catch (Exception $e) {
+      watchdog('search_api_ai', 'openai_get_api() threw: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+      $client = NULL;
+    }
+  }
+
+  // Legacy: try to instantiate OpenAIApi with configured key
+  try {
+    $api_key_name = NULL;
+    if (function_exists('config')) {
+      $cfg = config('openai.settings');
+      $api_key_name = $cfg ? $cfg->get('api_key') : NULL;
+    }
+    if (empty($api_key_name)) {
+      $api_key_name = config_get('openai.settings', 'api_key');
+    }
+    $api_key = $api_key_name ? key_get_key_value($api_key_name) : NULL;
+    if (!empty($api_key) && class_exists('OpenAIApi')) {
+      $client = new OpenAIApi($api_key);
+      // If model contains provider prefix, strip it for the client call
+      if (strpos($model, '/') !== FALSE) {
+        list(, $model_id) = explode('/', $model, 2);
+        $stripped_model = $model_id;
+      }
+      else {
+        $stripped_model = $model;
+      }
+      return $client;
+    }
+  }
+  catch (Exception $e) {
+    watchdog('search_api_ai', 'Failed to instantiate legacy OpenAIApi: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+  }
+
+  return NULL;
+}
+
+/**
+ * Call an embeddings API in a client-agnostic way and return an embedding vector.
+ *
+ * Accepts various client shapes and tries common method names. Returns an array
+ * of floats on success, or NULL on failure.
+ */
+function search_api_ai_openai_call_embedding($client, $input, $model) {
+  if (empty($client)) {
+    return NULL;
+  }
+
+  // Try legacy helper method name used by some wrappers
+  try {
+    if (method_exists($client, 'embedding')) {
+      $res = $client->embedding($input, $model);
+      if (is_array($res)) {
+        return $res;
+      }
+    }
+
+    // Newer OpenAI PHP client: embeddings()->create(['model'=>..., 'input'=>...])
+    if (method_exists($client, 'embeddings')) {
+      try {
+        $maybe = $client->embeddings();
+        if (is_object($maybe) && method_exists($maybe, 'create')) {
+          $resp = $maybe->create(['model' => $model, 'input' => $input]);
+          // Response commonly has data[0]->embedding or data[0]['embedding']
+          if (is_object($resp) && isset($resp->data) && is_array($resp->data) && isset($resp->data[0]->embedding)) {
+            return (array) $resp->data[0]->embedding;
+          }
+          if (is_array($resp) && isset($resp['data'][0]['embedding'])) {
+            return $resp['data'][0]['embedding'];
+          }
+        }
+      }
+      catch (Exception $e) {
+        // fall through to other attempts
+      }
+    }
+
+    // Some older clients expose embeddings as listModels/filterModels or embed()/createEmbedding
+    if (method_exists($client, 'createEmbedding')) {
+      $resp = $client->createEmbedding($model, $input);
+      if (is_array($resp)) {
+        return $resp;
+      }
+    }
+
+    if (method_exists($client, 'embed') || method_exists($client, 'emb')) {
+      // Try embed($input, $model) or embed($model, $input)
+      if (method_exists($client, 'embed')) {
+        $resp = $client->embed($input, $model);
+        if (is_array($resp)) return $resp;
+      }
+      if (method_exists($client, 'emb')) {
+        $resp = $client->emb($input, $model);
+        if (is_array($resp)) return $resp;
+      }
+    }
+  }
+  catch (Exception $e) {
+    watchdog('search_api_ai', 'Embedding call failed: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
+    return NULL;
+  }
+
+  return NULL;
+}
+
+/**
+ * Convert text to embedding vectors (main conversion function).
+ * Uses compatibility helpers to resolve OpenAI clients when needed.
+ */
 function search_api_ai_convert_embedding($value, $original_type, $type, array $embedding_settings, $field_name = 'unknown_field', $server = NULL) {
   if ($type !== 'llm_vector_embedding' || !is_string($value)) {
     watchdog('search_api_ai', "❌ Bad call: type=$type, is_string=" . (is_string($value) ? 'yes' : 'no'), [], WATCHDOG_WARNING);
@@ -166,13 +316,20 @@ function search_api_ai_convert_embedding($value, $original_type, $type, array $e
     }
   }
 
-  // Use OpenAI API for OpenAI models or as fallback
   if (!$engine_instance) {
     watchdog('search_api_ai', '⚠️ Using OpenAI API fallback for model: @model', ['@model' => $model], WATCHDOG_WARNING);
-    $openai_config = config('openai.settings');
-    $api_key_name  = $openai_config->get('api_key');
-    $api_key       = key_get_key_value($api_key_name);
-    $openai_api    = new OpenAIApi($api_key);
+    $stripped_model = NULL;
+    $openai_api = search_api_ai_openai_client_for_model($model, $stripped_model);
+  }
+
+  if (!$openai_api && !$engine_instance) {
+    watchdog('search_api_ai', '❌ Failed to load API for model: @model', ['@model' => $model], WATCHDOG_ERROR);
+    return [];
+  }
+
+  // Record that we are starting an embedding generation for logging context
+  if ($openai_api && method_exists($openai_api, 'recordLog')) {
+    $openai_api->recordLog('embedding_start', $model, ['text_len' => strlen($prepared_text)], NULL, TRUE, 0);
   }
 
   $chunked_vectors = [];
@@ -184,7 +341,10 @@ function search_api_ai_convert_embedding($value, $original_type, $type, array $e
         $vector = $engine_instance->generateEmbeddings($chunk_clean);
       }
       else {
-        $vector = $openai_api->embedding($chunk_clean, $model);
+        // We resolved the OpenAI client above; prefer the stripped model name
+        $use_model = isset($stripped_model) && !empty($stripped_model) ? $stripped_model : $model;
+        // Use the compatibility wrapper to call embeddings in various client shapes
+        $vector = search_api_ai_openai_call_embedding($openai_api, $chunk_clean, $use_model);
       }
 
       if (!is_array($vector) || count($vector) !== (int) $expected_dimension) {
@@ -583,12 +743,6 @@ function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) 
   backdrop_set_message(t('Embedding engine configuration has been saved.'));
 }
 
-/**
- * Inject embeddings while indexing.
- */
-/**
- * Inject embeddings while indexing.
- */
 function search_api_ai_search_api_index_items_alter(array &$items, SearchApiIndex $index) {
   global $search_api_ai_vectors;
   if (!isset($search_api_ai_vectors)) $search_api_ai_vectors = [];

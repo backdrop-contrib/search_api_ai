@@ -50,12 +50,20 @@ class OpenRouterEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
     $this->config = $config;
     $this->modelName = !empty($config['model_id']) ? $config['model_id'] : 'voyage-ai/voyage-3';
 
-    // Get OpenRouter-specific client
-    $this->client = openai_get_api('openrouter');
-
+    // Resolve OpenRouter client via compatibility helper.
+    // Important: we resolve the client first and explicitly throw if
+    // resolution fails. This guarantees we never call the parent
+    // constructor with a NULL client. Order: (1) resolve client,
+    // (2) validate/throw on failure, (3) call parent with the valid
+    // client so base class has the dependency it expects.
+    $stripped = NULL;
+    $this->client = search_api_ai_openai_client_for_model('openrouter/' . $this->modelName, $stripped);
     if (!$this->client) {
       throw new Exception('Failed to initialize OpenRouter API client');
     }
+
+    // Initialize parent with resolved client for base functionality.
+    parent::__construct($config, $this->client);
   }
 
   /**
@@ -108,7 +116,7 @@ class OpenRouterEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    */
   public function generateEmbeddings($text, $options = array()) {
     try {
-      return $this->client->embedding($text, $this->modelName);
+      return search_api_ai_openai_call_embedding($this->client, $text, $this->modelName);
     }
     catch (Exception $e) {
       watchdog('search_api_ai_openrouter', 'Error generating embeddings with model @model: @error', array(
@@ -127,8 +135,12 @@ class OpenRouterEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    */
   public function getDimension() {
     if ($this->modelDimension === NULL) {
-      // Use dynamic detection from openai module
-      $this->modelDimension = openai_get_embedding_dimension($this->modelName, 'openrouter');
+      if (function_exists('openai_get_embedding_dimension')) {
+        $this->modelDimension = openai_get_embedding_dimension($this->modelName, 'openrouter');
+      }
+      else {
+        $this->modelDimension = search_api_ai_get_embedding_dimension();
+      }
     }
     return $this->modelDimension;
   }

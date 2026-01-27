@@ -137,8 +137,8 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
           $vector_literal = '[' . implode(',', $values) . ']';
 
           // Use plain SQL for upsert.
-          // Use Backdrop curly brace syntax for table name to prevent SQL injection.
-          $sql = "INSERT INTO {" . $schema . "." . $table . "} (id, backdrop_entity_id, nid, content, vector) VALUES (:id, :beid, :nid, :content, :vector::vector) "
+          $qualified = $this->qualify($schema, $table);
+          $sql = "INSERT INTO {$qualified} (id, backdrop_entity_id, nid, content, vector) VALUES (:id, :beid, :nid, :content, :vector::vector) "
                . "ON CONFLICT (id) DO UPDATE SET backdrop_entity_id = EXCLUDED.backdrop_entity_id, nid = EXCLUDED.nid, content = EXCLUDED.content, vector = EXCLUDED.vector";
 
           db_query($sql, [
@@ -220,22 +220,31 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
       return ['result count' => 0, 'results' => []];
     }
 
-    // Get embedding for the query using configured provider.
+    // Resolve client and request embedding using compatibility helpers.
     $api = NULL; $stripped_model = NULL; $model_to_use = NULL;
-    if (function_exists('openai_get_api_for_model')) {
-      $api = openai_get_api_for_model($model, $stripped_model);
-      $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
+    $api = search_api_ai_openai_client_for_model($model, $stripped_model);
+    $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
+
+    if ($api && method_exists($api, 'recordLog')) {
+      $api->recordLog('search_embedding', $model, ['text_len' => strlen($text)], NULL, TRUE, 0);
     }
-    else {
-      $openai_config = config('openai.settings');
-      $api_key = key_get_key_value($openai_config->get('api_key'));
-      $api = new OpenAIApi($api_key);
-      $model_to_use = $model;
-    }
+
     if (!$api) {
-      throw new Exception('Failed to get API client for model: ' . $model);
+      try {
+        $openai_config = config('openai.settings');
+        $api_key = key_get_key_value($openai_config->get('api_key'));
+        if (!empty($api_key) && class_exists('OpenAIApi')) {
+          $api = new OpenAIApi($api_key);
+          $model_to_use = $model;
+        }
+      }
+      catch (Exception $e) {
+        watchdog('search_api_ai_pgvector', 'Failed to initialize OpenAI client for embeddings: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
+        throw new Exception('Failed to get API client for model: ' . $model);
+      }
     }
-    $query_embedding = $api->embedding($text, $model_to_use);
+
+    $query_embedding = search_api_ai_openai_call_embedding($api, $text, $model_to_use);
     if (empty($query_embedding)) {
       throw new Exception('Failed to retrieve embedding.');
     }
@@ -321,9 +330,10 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
    * Ensure pgvector extension, table and index exist with correct dimension.
    */
   protected function ensureTable($schema, $table, $dimension) {
-    // Validate schema name to prevent SQL injection.
-    if (!preg_match('/^[A-Za-z0-9_]+$/', $schema)) {
-      throw new InvalidArgumentException('Invalid schema name: ' . $schema);
+    // Sanitize schema name to avoid SQL injection and ensure a valid identifier.
+    $schema = preg_replace('/[^a-zA-Z0-9_]/', '', $schema);
+    if ($schema === '') {
+      $schema = 'public';
     }
     // Create schema if not exists.
     db_query('CREATE SCHEMA IF NOT EXISTS ' . db_escape_table($schema));
@@ -355,9 +365,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     else {
       // Validate dimension; if wrong, fail loudly (dropping data would be risky).
       try {
-        // For pgvector, the dimension is stored as atttypmod - 4.
-        $atttypmod = db_query("SELECT atttypmod FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
-        $dim = ($atttypmod > 0) ? ($atttypmod - 4) : NULL;
+        $dim = db_query("SELECT atttypmod - 4 FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
       }
       catch (Exception $e) {
         $dim = NULL;
@@ -398,3 +406,4 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     }
   }
 }
+

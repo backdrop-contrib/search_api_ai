@@ -54,46 +54,105 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
   }
 
   // Add Model dropdown, Chat Temperature, and Max Tokens fields directly after Index
-  $models = openai_get_all_chat_models();
-  
-  // Ensure $models is a flat options array for the select element
-  $flat_options = [];
-  if (!empty($models) && is_array($models)) {
-    foreach ($models as $group_label => $group_items) {
+  $cache_id = 'search_api_ai_explorer_chat_models';
+  $cache = cache_get($cache_id);
+  if ($cache && !empty($cache->data)) {
+    $chat_models = $cache->data;
+  }
+  else {
+    // Prefer the newer helper when available. Otherwise attempt to discover
+    // models by instantiating a legacy client and normalizing results.
+    if (function_exists('openai_get_all_chat_models')) {
+      $chat_models = openai_get_all_chat_models();
+    }
+    else {
+      $chat_models = [];
+      try {
+        // Try to use our compatibility helper to get a client and then list models
+        $stripped = NULL;
+        $client = search_api_ai_openai_client_for_model('openai', $stripped);
+        if ($client) {
+          $models = [];
+          if (method_exists($client, 'filterModels')) {
+            $flat = $client->filterModels(['gpt']);
+            if (!empty($flat) && is_array($flat)) {
+              $models = $flat;
+            }
+          }
+          elseif (method_exists($client, 'listModels')) {
+            $resp = $client->listModels();
+            if (is_object($resp) && isset($resp->data) && is_array($resp->data)) {
+              foreach ($resp->data as $m) {
+                $id = is_object($m) && isset($m->id) ? $m->id : (is_array($m) && isset($m['id']) ? $m['id'] : NULL);
+                if ($id) $models[$id] = $id;
+              }
+            }
+            elseif (is_array($resp)) {
+              foreach ($resp as $k => $v) {
+                if (is_string($k) && is_string($v)) $models[$k] = $v;
+              }
+            }
+          }
+
+          if (!empty($models)) {
+            $chat_models = ['openai' => $models];
+          }
+        }
+      }
+      catch (Exception $e) {
+        watchdog('search_api_ai', 'Failed to fetch models from legacy OpenAIApi: @msg', ['@msg' => $e->getMessage()], WATCHDOG_WARNING);
+      }
+    }
+    cache_set($cache_id, $chat_models, 'cache', REQUEST_TIME + 3600);
+  }
+
+  // Create flat array for default value checking
+  $flat_chat_options = [];
+  if (!empty($chat_models) && is_array($chat_models)) {
+    foreach ($chat_models as $group_label => $group_items) {
       if (is_array($group_items)) {
         foreach ($group_items as $k => $v) {
-          $flat_options[$k] = $v;
+          $flat_chat_options[$k] = $v;
         }
       }
       else {
-        // In case a provider returned a simple map
-        foreach ((array) $models as $k => $v) {
-          $flat_options[$k] = $v;
-        }
-        break;
+        $flat_chat_options[$group_label] = $group_items;
       }
     }
   }
-  
-  // Determine default. If the existing default isn't available, pick the first model
-  $default_model = 'gpt-3.5-turbo';
-  if (!empty($flat_options)) {
-    if (!isset($flat_options[$default_model])) {
-      reset($flat_options);
-      $default_model = key($flat_options);
+
+  // Determine default chat model
+  $default_chat_model = 'openai/gpt-3.5-turbo';
+  if (!empty($flat_chat_options)) {
+    if (!isset($flat_chat_options[$default_chat_model])) {
+      // Try without prefix
+      if (isset($flat_chat_options['gpt-3.5-turbo'])) {
+        $default_chat_model = 'gpt-3.5-turbo';
+      }
+      else {
+        // Just use first available
+        reset($flat_chat_options);
+        $default_chat_model = key($flat_chat_options);
+      }
     }
   }
-  else {
-    $default_model = 'gpt-3.5-turbo';
-  }
-  
+
   $form['model'] = [
     '#type' => 'select',
-    '#title' => t('Model'),
-    '#options' => $flat_options,
-    '#default_value' => $default_model,
-    '#description' => t('Select a model from any enabled AI provider. Available models and pricing vary by provider.'),
+    '#title' => t('Chat Model'),
+    '#options' => $chat_models,  // Use grouped array for optgroups
+    '#default_value' => $default_chat_model,
+    '#description' => t('Select a chat model from any enabled AI provider. Available models and pricing vary by provider.'),
   ];
+
+  // Auto-detect embedding model from the selected index (no dropdown needed)
+  // The embedding model will be determined in the submit handler based on index configuration
+  $form['embedding_model_info'] = [
+    '#type' => 'markup',
+    '#markup' => '<div class="messages info">' . t('The embedding model will be automatically detected from the selected index configuration.') . '</div>',
+    '#weight' => 104,
+  ];
+
   $form['chat_temperature'] = [
     '#type' => 'number',
     '#title' => t('Chat Temperature'),
@@ -336,31 +395,36 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   $chat_max_tokens = isset($form_state['values']['chat_max_tokens']) ? intval($form_state['values']['chat_max_tokens']) : 1024;
 
   // Get the appropriate API client for the selected chat model
-  if (function_exists('openai_get_api_for_model')) {
-    $openai = openai_get_api_for_model($chat_model, $stripped_chat_model);
-    // Use the stripped model ID for the API call (without provider prefix)
-    $chat_model_to_use = !empty($stripped_chat_model) ? $stripped_chat_model : $chat_model;
-  }
-  else {
-    // Fallback to OpenAI API directly
-    $openai_api_key_name = config_get('openai.settings', 'api_key');
-    $openai_api_key = key_get_key_value($openai_api_key_name);
-    $openai = new OpenAIApi($openai_api_key);
-    $chat_model_to_use = $chat_model;
-  }
-  
+  $stripped_chat_model = NULL;
+  $openai = search_api_ai_openai_client_for_model($chat_model, $stripped_chat_model);
+  $chat_model_to_use = !empty($stripped_chat_model) ? $stripped_chat_model : $chat_model;
+
   if (!$openai) {
     backdrop_set_message(t('Unable to get API for chat model @model', ['@model' => $chat_model]), 'error');
     return;
   }
 
-  // Get embedding model from index options, then from server options, then use default
-  $embedding_model = 'text-embedding-3-small';
-  if (!empty($index->options['embedding_settings']['embeddings_engine'])) {
-    $embedding_model = $index->options['embedding_settings']['embeddings_engine'];
+  // Get embedding model from form, then from index options, then from server options, then use default
+  $embedding_model = isset($form_state['values']['embedding_model']) ? $form_state['values']['embedding_model'] : 'text-embedding-3-small';
+  if (empty($form_state['values']['embedding_model'])) {
+    if (!empty($index->options['embedding_settings']['embeddings_engine'])) {
+      $embedding_model = $index->options['embedding_settings']['embeddings_engine'];
+    }
+    elseif (!empty($server->options['embedding_model'])) {
+      $embedding_model = $server->options['embedding_model'];
+    }
   }
-  elseif (!empty($server->options['embedding_model'])) {
-    $embedding_model = $server->options['embedding_model'];
+
+  // Determine dimension
+  $dimension = 1536;
+  if (function_exists('openai_get_embedding_dimension')) {
+    // If the model is prefixed with a provider, extract it
+    $provider_id = 'openai';
+    $model_id = $embedding_model;
+    if (strpos($embedding_model, '/') !== FALSE) {
+      list($provider_id, $model_id) = explode('/', $embedding_model, 2);
+    }
+    $dimension = openai_get_embedding_dimension($model_id, $provider_id);
   }
 
   // **Generate Embeddings using the embeddings engine**
@@ -368,7 +432,7 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     // Create configuration for the embedding engine
     $embedding_configuration = [
       'embeddings_engine' => $embedding_model,
-      'embeddings_engine_configuration' => ['dimension' => 1536], // Default dimension
+      'embeddings_engine_configuration' => ['dimension' => $dimension],
     ];
 
     // Load the embedding engine
@@ -376,6 +440,14 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
 
     if (!$embedding_engine) {
       throw new Exception('Failed to load embedding engine.');
+    }
+
+    // Log the explorer query to openai_log if possible
+    // Try to log via the provider-aware client if possible.
+    $stripped = NULL;
+    $api = search_api_ai_openai_client_for_model($embedding_model, $stripped);
+    if ($api && method_exists($api, 'recordLog')) {
+      $api->recordLog('explorer_embedding', $embedding_model, ['query' => $query_text], NULL, TRUE, 0);
     }
 
     // Create the embedding for the user query
@@ -482,7 +554,6 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   }
 
   // Compose chat prompt and finish as before...
-  $messages[] = ['role' => 'user', 'content' => $query_text];
   // Initialize AI Messages (only once!)
   $messages = [
     [
