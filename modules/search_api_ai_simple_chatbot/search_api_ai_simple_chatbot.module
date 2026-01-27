@@ -375,8 +375,19 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
       if (strpos($namespace, ':') === 0) { $namespace = substr($namespace, 1); }
       if (!$namespace) {
         watchdog('search_api_ai_simple_chatbot', 'Failed to retrieve namespace for Pinecone.', [], WATCHDOG_ERROR);
-        $_SESSION['search_api_ai_chat_history'][] = [ 'question' => $user_query, 'answer' => check_plain($chat_config['error_message']), 'sources' => '' ];
-        $form_state['search_api_ai_stream_last'] = TRUE; $form_state['rebuild'] = TRUE; return;
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
       }
       $query_options = [ 'vector' => $embedding_vector, 'top_k' => (int) ($chat_config['top_k'] ?? 8), 'namespace' => $namespace, 'include_metadata' => TRUE ];
       $client = new SearchApiAiPineconeVectorClient($server->options);
@@ -387,8 +398,19 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
         }
       } catch (Exception $e) {
         watchdog('search_api_ai_simple_chatbot', 'Error querying Pinecone: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
-        $_SESSION['search_api_ai_chat_history'][] = [ 'question' => $user_query, 'answer' => check_plain($chat_config['error_message']), 'sources' => '' ];
-        $form_state['search_api_ai_stream_last'] = TRUE; $form_state['rebuild'] = TRUE; return;
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
       }
     }
     elseif ($backend_class === 'milvus') {
@@ -396,8 +418,19 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
       $collection = $milvus_service->getCollection($index);
       if (!$collection) {
         watchdog('search_api_ai_simple_chatbot', 'Failed to retrieve collection for Milvus.', [], WATCHDOG_ERROR);
-        $_SESSION['search_api_ai_chat_history'][] = [ 'question' => $user_query, 'answer' => check_plain($chat_config['error_message']), 'sources' => '' ];
-        $form_state['search_api_ai_stream_last'] = TRUE; $form_state['rebuild'] = TRUE; return;
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
       }
       $database = isset($server->options['database']) ? $server->options['database'] : 'default';
       $query_options = [ 'vector' => $embedding_vector, 'top_k' => (int) ($chat_config['top_k'] ?? 8), 'collection' => $collection, 'database' => $database, 'output_fields' => ['content','nid','title','backdrop_entity_id','backdrop_long_id','field_name','server_id','index_id'] ];
@@ -409,14 +442,36 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
         }
       } catch (Exception $e) {
         watchdog('search_api_ai_simple_chatbot', 'Error querying Milvus: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
-        $_SESSION['search_api_ai_chat_history'][] = [ 'question' => $user_query, 'answer' => check_plain($chat_config['error_message']), 'sources' => '' ];
-        $form_state['search_api_ai_stream_last'] = TRUE; $form_state['rebuild'] = TRUE; return;
+        // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
       }
     }
     else {
       watchdog('search_api_ai_simple_chatbot', 'This backend is not supported for vector search: @b', ['@b' => $backend_class], WATCHDOG_ERROR);
-      $_SESSION['search_api_ai_chat_history'][] = [ 'question' => $user_query, 'answer' => check_plain($chat_config['error_message']), 'sources' => '' ];
-      $form_state['search_api_ai_stream_last'] = TRUE; $form_state['rebuild'] = TRUE; return;
+      // Record an error response in the user's chat history. Keep these
+// operations on separate lines for clarity and easier debugging.
+$_SESSION['search_api_ai_chat_history'][] = [
+  'question' => $user_query,
+  'answer' => check_plain($chat_config['error_message']),
+  'sources' => '',
+];
+
+// Mark this as the last streamed message and request a form rebuild
+// so the UI updates correctly. Return early after setting flags.
+$form_state['search_api_ai_stream_last'] = TRUE;
+$form_state['rebuild'] = TRUE;
+return;
     }
   } catch (Exception $e) {
     watchdog_exception('search_api_ai_simple_chatbot', $e);
@@ -1107,5 +1162,3 @@ function _search_api_ai_simple_chatbot_safe_chat($openai, $model, $messages, $te
 
   return NULL;
 }
-
-
