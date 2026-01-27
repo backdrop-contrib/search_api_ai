@@ -7,7 +7,7 @@ async function run() {
   try {
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
-      core.setFailed('GITHUB_TOKEN or BOT_TOKEN not provided');
+      core.setFailed('GITHUB_TOKEN not provided');
       return;
     }
 
@@ -48,13 +48,34 @@ async function run() {
     // ```newfile
     // content here
     // ```
-    const fileBlockRegex = /FILE:\s*(.+?)\n```(?:\w+)?\n([\s\S]+?)```/gi;
+    // Limit comment length to prevent ReDoS attacks
+    const maxCommentLength = 100000; // 100KB
+    if (comment.length > maxCommentLength) {
+      console.log(`Comment too long (${comment.length} chars), exiting.`);
+      return;
+    }
+
+    const fileBlockRegex = /FILE:\s*([^\n]+)\n```[^\n]*\n([\s\S]+?)```/gi;
     let match;
     const filesToUpdate = [];
 
     while ((match = fileBlockRegex.exec(comment)) !== null) {
       const filePath = match[1].trim();
       const fileContent = match[2];
+
+      // Validate file path to prevent directory traversal attacks
+      if (filePath.includes('..') || path.isAbsolute(filePath)) {
+        console.log(`Invalid file path (contains .. or is absolute): ${filePath}, skipping.`);
+        continue;
+      }
+
+      // Additional path validation: ensure it doesn't try to escape the repo
+      const normalizedPath = path.normalize(filePath);
+      if (normalizedPath.startsWith('..') || path.isAbsolute(normalizedPath)) {
+        console.log(`Invalid normalized path: ${normalizedPath}, skipping.`);
+        continue;
+      }
+
       filesToUpdate.push({ path: filePath, content: fileContent });
     }
 
