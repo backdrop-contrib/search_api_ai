@@ -40,6 +40,10 @@ async function run() {
     }
 
     const repoFull = process.env.GITHUB_REPOSITORY;
+    if (!repoFull || typeof repoFull !== 'string' || !repoFull.includes('/')) {
+      core.setFailed('GITHUB_REPOSITORY is not set or is malformed (expected "owner/repo").');
+      return;
+    }
     const [owner, repo] = repoFull.split('/');
     const octokit = github.getOctokit(token);
 
