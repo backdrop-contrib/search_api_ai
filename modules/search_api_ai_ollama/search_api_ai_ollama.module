@@ -8,26 +8,26 @@
 /**
  * Implements hook_autoload_info().
  */
-function search_api_ai_olloma_autoload_info() {
+function search_api_ai_ollama_autoload_info() {
   return array(
-    'OllamaEmbeddingsEngine' => 'includes/OllomaEmbeddingsEngine.inc',
+    'OllamaEmbeddingsEngine' => 'includes/OllamaEmbeddingsEngine.inc',
   );
 }
 
 /**
  * Implements hook_embedding_engine_info().
  */
-function search_api_ai_olloma_embedding_engine_info() {
+function search_api_ai_ollama_embedding_engine_info() {
    $engines = array();
 
    // Get all Ollama models
-   // Note: We return ALL models since Olloma doesn't reliably indicate
+   // Note: We return ALL models since Ollama doesn't reliably indicate
    // which models support embeddings. Users must know their models.
-   // Resolve a client for the Olloma provider using our compatibility helper.
+   // Resolve a client for the Ollama provider using our compatibility helper.
    $stripped = NULL;
-  $api = search_api_ai_openai_client_for_model('olloma', $stripped);
+  $api = search_api_ai_openai_client_for_model('ollama', $stripped);
    if (!$api) {
-    watchdog('search_api_ai_olloma', 'Failed to get Olloma API client', array(), WATCHDOG_WARNING);
+    watchdog('search_api_ai_ollama', 'Failed to get Ollama API client', array(), WATCHDOG_WARNING);
      return $engines;
    }
 
@@ -65,17 +65,17 @@ function search_api_ai_olloma_embedding_engine_info() {
      }
 
     foreach ($normalized as $model_id => $model_name) {
-      $engines['olloma/' . $model_id] = array(
+      $engines['ollama/' . $model_id] = array(
         'label' => t('Ollama: @model', array('@model' => $model_name)),
         'class' => 'OllamaEmbeddingsEngine',
-        'file' => 'includes/OllomaEmbeddingsEngine.inc',
-        'module' => 'search_api_ai_olloma',
+        'file' => 'includes/OllamaEmbeddingsEngine.inc',
+        'module' => 'search_api_ai_ollama',
         'model_id' => $model_id,
       );
     }
    }
    catch (Exception $e) {
-    watchdog('search_api_ai_olloma', 'Error fetching Olloma models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+    watchdog('search_api_ai_ollama', 'Error fetching Ollama models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
    }
    return $engines;
  }
