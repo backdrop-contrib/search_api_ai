@@ -53,7 +53,7 @@ async function run() {
     const files = [];
     while ((match = fileBlockRegex.exec(comment)) !== null) {
       const filePath = match[1].trim();
-      const content = match[2].replace(/\r\n/g, '\n');
+      const content = match[2].replace(/\r\n|\r/g, '\n');
       files.push({ path: filePath, content });
     }
 
@@ -114,7 +114,9 @@ async function run() {
 
     // Create a PR
     const prTitle = `Automated: apply @copilot changes (${new Date().toISOString().slice(0,10)})`;
-    const prBody = `This PR was opened automatically from a @copilot implement comment by @${commenter}.\n\nOriginal comment:\n\n> ${comment.split('\n').join('\n> ')}`;
+    // Sanitize comment content to prevent markdown injection
+    const sanitizedComment = comment.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const prBody = `This PR was opened automatically from a @copilot implement comment by @${commenter}.\n\nOriginal comment:\n\n> ${sanitizedComment.split('\n').join('\n> ')}`;
 
     const pr = await octokit.rest.pulls.create({
       owner, repo,

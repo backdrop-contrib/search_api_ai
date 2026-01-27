@@ -34,5 +34,6 @@ jobs:
           GITHUB_EVENT_PATH: ${{ github.event_path }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
+          cd .github/actions/handle-comment
           npm ci
-          node .github/actions/handle-comment/index.js
+          node index.js
