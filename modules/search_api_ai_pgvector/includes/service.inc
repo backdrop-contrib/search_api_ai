@@ -330,6 +330,11 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
    * Ensure pgvector extension, table and index exist with correct dimension.
    */
   protected function ensureTable($schema, $table, $dimension) {
+    // Sanitize schema name to avoid SQL injection and ensure a valid identifier.
+    $schema = preg_replace('/[^a-zA-Z0-9_]/', '', $schema);
+    if ($schema === '') {
+      $schema = 'public';
+    }
     // Create schema if not exists.
     db_query('CREATE SCHEMA IF NOT EXISTS ' . $schema);
     // Enable extension.
