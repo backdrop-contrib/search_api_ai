@@ -345,29 +345,36 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
       return ['result count' => 0, 'results' => []];
     }
 
-    // Get query embedding using the appropriate provider.
+    // Resolve client and request embedding using compatibility helpers.
     $stripped_model = NULL;
-    if (function_exists('openai_get_api_for_model')) {
-      $api = openai_get_api_for_model($model, $stripped_model);
-      $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
-      watchdog('search_api_ai_milvus', 'Search embedding: model=@model, stripped=@stripped, text_len=@len, api_class=@class', [
-        '@model' => $model,
-        '@stripped' => $stripped_model,
-        '@len' => strlen($text),
-        '@class' => get_class($api),
-      ], WATCHDOG_NOTICE);
+    $api = search_api_ai_openai_client_for_model($model, $stripped_model);
+    $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
+
+    if ($api && method_exists($api, 'recordLog')) {
+      $api->recordLog('search_embedding', $model, ['text_len' => strlen($text)], NULL, TRUE, 0);
     }
-    else {
-      // Fallback to OpenAI API directly if function doesn't exist
-      $openai_config = config('openai.settings');
-      $api_key = key_get_key_value($openai_config->get('api_key'));
-      $api = new OpenAIApi($api_key);
-      $model_to_use = $model;
-    }
+
     if (!$api) {
-      throw new Exception('Failed to get API client for model: ' . $model);
+      try {
+        $openai_config = config('openai.settings');
+        $api_key = key_get_key_value($openai_config->get('api_key'));
+        if (!empty($api_key) && class_exists('OpenAIApi')) {
+          $api = new OpenAIApi($api_key);
+          $model_to_use = $model;
+        }
+      }
+      catch (Exception $e) {
+        watchdog('search_api_ai_milvus', 'Failed to initialize OpenAI client for embeddings: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
+        return ['result count' => 0, 'results' => []];
+      }
     }
-    $query_embedding = $api->embedding($text, $model_to_use);
+
+    if (!$api) {
+      watchdog('search_api_ai_milvus', 'No OpenAI client available for model: @model', ['@model' => $model], WATCHDOG_ERROR);
+      return ['result count' => 0, 'results' => []];
+    }
+
+    $query_embedding = search_api_ai_openai_call_embedding($api, $text, $model_to_use);
 
     if (empty($query_embedding)) {
       throw new Exception('Failed to retrieve embedding.');

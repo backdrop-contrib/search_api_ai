@@ -34,4 +34,3 @@ function search_api_ai_milvus_validate_collection_name($element, &$form_state) {
     form_error($element, t('Collection name can only contain letters, numbers, and underscores. Hyphens and other special characters are not allowed.'));
   }
 }
-

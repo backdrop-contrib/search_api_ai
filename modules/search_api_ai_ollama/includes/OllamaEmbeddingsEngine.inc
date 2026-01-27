@@ -39,32 +39,28 @@ class OllamaEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    */
   protected $modelDimension = NULL;
 
+  // No explicit constructor: let parent constructor run so model metadata is initialized.
+  // Resolve the provider client lazily when we need it (avoids constructor parent-call analyzer issues).
+
   /**
-   * Constructs a new OllamaEmbeddingsEngine.
+   * Ensure the Ollama client is resolved and assigned on $this->client.
    *
-   * @param array $config
-   *   The configuration including model_id.
-   * @param object $client
-   *   Not used - we get our own Ollama client.
+   * @return bool
+   *   TRUE if a client is available, FALSE otherwise.
    */
-  public function __construct(array $config, $client = NULL) {
-    $this->config = $config;
-    $this->modelName = !empty($config['model_id']) ? $config['model_id'] : 'nomic-embed-text';
-
-    watchdog('search_api_ai_ollama', 'OllamaEmbeddingsEngine initialized with model: @model', array(
-      '@model' => $this->modelName,
-    ), WATCHDOG_DEBUG);
-
-    // Get Ollama-specific client
-    $this->client = openai_get_api('ollama');
-
-    if (!$this->client) {
-      throw new Exception('Failed to initialize Ollama API client');
+  protected function ensureClient() {
+    if (!empty($this->client)) {
+      return TRUE;
     }
-
-    watchdog('search_api_ai_ollama', 'Ollama client class: @class', array(
-      '@class' => get_class($this->client),
-    ), WATCHDOG_DEBUG);
+    $model = $this->getModelName();
+    $stripped = NULL;
+    $resolved = search_api_ai_openai_client_for_model('ollama/' . $model, $stripped);
+    if ($resolved) {
+      $this->client = $resolved;
+      watchdog('search_api_ai_ollama', 'Resolved Ollama client for model @model: @class', ['@model' => $model, '@class' => get_class($resolved)], WATCHDOG_DEBUG);
+      return TRUE;
+    }
+    return FALSE;
   }
 
   /**
@@ -74,7 +70,7 @@ class OllamaEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    *   TRUE if Ollama is available, FALSE otherwise.
    */
   public function isAvailable() {
-    return !empty($this->client);
+    return $this->ensureClient();
   }
 
   /**
@@ -115,7 +111,7 @@ class OllamaEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    *   The generated embedding vector.
    */
   public function generateEmbeddings($text, $options = array()) {
-    if (!$this->client) {
+    if (!$this->ensureClient()) {
       watchdog('search_api_ai_ollama', 'Ollama client not initialized', array(), WATCHDOG_ERROR);
       return array();
     }
@@ -126,7 +122,8 @@ class OllamaEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
         '@text' => substr($text, 0, 100),
       ), WATCHDOG_DEBUG);
 
-      $result = $this->client->embedding($text, $this->modelName);
+      // Use compatibility wrapper to request embeddings (supports many client shapes).
+      $result = search_api_ai_openai_call_embedding($this->client, $text, $this->modelName);
 
       watchdog('search_api_ai_ollama', 'Ollama returned @count dimensions', array(
         '@count' => is_array($result) ? count($result) : 'not an array',
@@ -151,8 +148,14 @@ class OllamaEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    */
   public function getDimension() {
     if ($this->modelDimension === NULL) {
-      // Use dynamic detection from openai module
-      $this->modelDimension = openai_get_embedding_dimension($this->modelName, 'ollama');
+      // Prefer new helper if available
+      if (function_exists('openai_get_embedding_dimension')) {
+        $this->modelDimension = openai_get_embedding_dimension($this->modelName, 'ollama');
+      }
+      else {
+        // Fallback: attempt to query the client for dimension information
+        $this->modelDimension = search_api_ai_get_embedding_dimension();
+      }
     }
     return $this->modelDimension;
   }

@@ -14,14 +14,231 @@ function search_api_ai_openai_autoload_info() {
  */
 function search_api_ai_openai_embedding_engine_info() {
   $engines = array();
-  $api = openai_get_api('openai');
+
+  // OpenAI 2.x: Multi-provider support
+  if (function_exists('openai_get_api') && function_exists('openai_get_provider_label')) {
+    // Get all enabled providers from OpenAI module
+    $providers_root = config_get('openai.settings', 'providers') ?: [];
+
+    foreach ($providers_root as $provider_id => $provider_config) {
+      if (empty($provider_config['enabled'])) {
+        continue;
+      }
+
+      try {
+        $provider_api = openai_get_api($provider_id);
+        if (!$provider_api) {
+          continue;
+        }
+
+        // Get embedding models (just IDs and names, no dimensions yet).
+        // Different OpenAI client versions expose different method shapes, so try several.
+        try {
+          $provider_models = NULL;
+          if (is_object($provider_api) && method_exists($provider_api, 'getEmbeddingModels')) {
+            $provider_models = $provider_api->getEmbeddingModels();
+          }
+          elseif (is_object($provider_api) && method_exists($provider_api, 'getModels')) {
+            $provider_models = $provider_api->getModels();
+          }
+          elseif (is_object($provider_api) && method_exists($provider_api, 'listModels')) {
+            $provider_models = $provider_api->listModels();
+          }
+          elseif (is_object($provider_api) && method_exists($provider_api, 'models')) {
+            try {
+              $maybe = $provider_api->models();
+              if (is_object($maybe) && method_exists($maybe, 'list')) {
+                $provider_models = $maybe->list();
+              }
+            }
+            catch (Exception $e) {
+              // ignore and fallback to empty below
+            }
+          }
+
+          // Normalize shapes into id => name associative array.
+          $normalized = array();
+          if (is_array($provider_models)) {
+            foreach ($provider_models as $k => $v) {
+              if (is_string($k) && is_string($v)) {
+                $normalized[$k] = $v;
+              }
+              elseif (is_string($v)) {
+                $normalized[$v] = $v;
+              }
+              elseif (is_object($v) || is_array($v)) {
+                $id = NULL;
+                $name = NULL;
+                if (is_object($v)) {
+                  $id = isset($v->id) ? $v->id : NULL;
+                  $name = isset($v->name) ? $v->name : NULL;
+                }
+                else {
+                  $id = isset($v['id']) ? $v['id'] : NULL;
+                  $name = isset($v['name']) ? $v['name'] : NULL;
+                }
+                if ($id) {
+                  $normalized[$id] = $name ?: $id;
+                }
+              }
+            }
+          }
+          elseif (is_object($provider_models) && isset($provider_models->data) && is_array($provider_models->data)) {
+            foreach ($provider_models->data as $m) {
+              $id = is_object($m) && isset($m->id) ? $m->id : (is_array($m) && isset($m['id']) ? $m['id'] : NULL);
+              $name = is_object($m) && isset($m->name) ? $m->name : NULL;
+              if ($id) {
+                $normalized[$id] = $name ?: $id;
+              }
+            }
+          }
+
+          $provider_models = $normalized;
+        }
+        catch (Exception $e) {
+          watchdog('search_api_ai_openai', 'Failed to fetch embedding models from @provider: @error', array('@provider' => $provider_id, '@error' => $e->getMessage()), WATCHDOG_WARNING);
+          continue;
+        }
+
+        if (empty($provider_models)) {
+          continue;
+        }
+
+        $provider_label = openai_get_provider_label($provider_id);
+
+        foreach ($provider_models as $model_id => $model_name) {
+          // Create fully-qualified model ID with provider prefix
+          $qualified_id = $provider_id . '/' . $model_id;
+
+          $engines[$qualified_id] = array(
+            'label' => $model_name . ' (' . $provider_label . ')',
+            'class' => 'OpenAiEmbeddingsEngine',
+            'file' => 'includes/OpenAiEmbeddingsEngine.inc',
+            'module' => 'search_api_ai_openai',
+            'model_id' => $model_id,
+            'model_name' => $model_name,
+            // Don't fetch dimension here - it will be lazy-loaded when needed
+            'model_dimension' => NULL,
+          );
+        }
+      }
+      catch (Exception $e) {
+        watchdog('search_api_ai_openai', 'Failed to fetch embedding models from @provider: @error',
+          array('@provider' => $provider_id, '@error' => $e->getMessage()), WATCHDOG_WARNING);
+      }
+    }
+
+    return $engines;
+  }
+
+  // OpenAI 1.x: Fallback to single OpenAI provider only
+  $api = NULL;
+  // Prefer the helper when available.
+  if (function_exists('openai_get_api')) {
+    try {
+      $api = openai_get_api('openai');
+    }
+    catch (Exception $e) {
+      watchdog('search_api_ai_openai', 'openai_get_api() threw an exception: @error', array('@error' => $e->getMessage()), WATCHDOG_WARNING);
+      $api = NULL;
+    }
+  }
+
+  // If the helper is not present or returned null, attempt legacy OpenAIApi instantiation
+  if (!$api) {
+    try {
+      $api_key_name = NULL;
+      if (function_exists('config')) {
+        $cfg = config('openai.settings');
+        $api_key_name = $cfg ? $cfg->get('api_key') : NULL;
+      }
+      if (empty($api_key_name)) {
+        // Older sites may use config_get() style
+        $api_key_name = config_get('openai.settings', 'api_key');
+      }
+      $api_key = $api_key_name ? key_get_key_value($api_key_name) : NULL;
+      if (!empty($api_key) && class_exists('OpenAIApi')) {
+        $api = new OpenAIApi($api_key);
+      }
+    }
+    catch (Exception $e) {
+      watchdog('search_api_ai_openai', 'Failed to instantiate legacy OpenAIApi: @error', array('@error' => $e->getMessage()), WATCHDOG_WARNING);
+    }
+  }
+
   if (!$api) {
     watchdog('search_api_ai_openai', 'OpenAI API client unavailable for embedding discovery.', array(), WATCHDOG_WARNING);
     return $engines;
   }
 
+  // Try several discovery methods depending on the OpenAI client version/shape.
   try {
-    $models = $api->getEmbeddingModels();
+    $models = NULL;
+
+    // Newer helper-style API
+    if (is_object($api) && method_exists($api, 'getEmbeddingModels')) {
+      $models = $api->getEmbeddingModels();
+    }
+    // Some clients may expose getModels()
+    elseif (is_object($api) && method_exists($api, 'getModels')) {
+      $models = $api->getModels();
+    }
+    // OpenAI PHP clients often have listModels() returning an object/array with 'data'.
+    elseif (is_object($api) && method_exists($api, 'listModels')) {
+      $models = $api->listModels();
+    }
+    // Some wrappers use a fluent models() service with list() method.
+    elseif (is_object($api) && method_exists($api, 'models')) {
+      try {
+        $maybe = $api->models();
+        if (is_object($maybe) && method_exists($maybe, 'list')) {
+          $models = $maybe->list();
+        }
+      }
+      catch (Exception $e) {
+        // ignore and allow fallback to empty list below
+      }
+    }
+
+    // Normalize various shapes into an associative array model_id => model_name.
+    $normalized = array();
+    if (is_array($models)) {
+      // If array is already id => name, keep it. If numeric keys, map values to ids.
+      foreach ($models as $k => $v) {
+        if (is_string($k) && is_string($v)) {
+          $normalized[$k] = $v;
+        }
+        elseif (is_string($v)) {
+          $normalized[$v] = $v;
+        }
+        elseif (is_object($v) || is_array($v)) {
+          $id = NULL;
+          $name = NULL;
+          if (is_object($v)) {
+            $id = isset($v->id) ? $v->id : NULL;
+            $name = isset($v->name) ? $v->name : NULL;
+          }
+          else {
+            $id = isset($v['id']) ? $v['id'] : NULL;
+            $name = isset($v['name']) ? $v['name'] : NULL;
+          }
+          if ($id) {
+            $normalized[$id] = $name ?: $id;
+          }
+        }
+      }
+    }
+    elseif (is_object($models) && isset($models->data) && is_array($models->data)) {
+      foreach ($models->data as $m) {
+        $id = is_object($m) && isset($m->id) ? $m->id : (is_array($m) && isset($m['id']) ? $m['id'] : NULL);
+        $name = is_object($m) && isset($m->name) ? $m->name : NULL;
+        if ($id) {
+          $normalized[$id] = $name ?: $id;
+        }
+      }
+    }
+
+    $models = $normalized;
   }
   catch (Exception $e) {
     watchdog('search_api_ai_openai', 'Failed to fetch OpenAI embedding models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
@@ -33,16 +250,16 @@ function search_api_ai_openai_embedding_engine_info() {
   }
 
   foreach ($models as $model_id => $model_name) {
-    $dimension = openai_get_embedding_dimension($model_id, 'openai');
-    $label = t('OpenAI: @model', ['@model' => $model_name]);
+    // OpenAI 1.x: No provider prefix
     $engines[$model_id] = array(
-      'label' => $label,
+      'label' => t('OpenAI: @model', ['@model' => $model_name]),
       'class' => 'OpenAiEmbeddingsEngine',
       'file' => 'includes/OpenAiEmbeddingsEngine.inc',
       'module' => 'search_api_ai_openai',
       'model_id' => $model_id,
       'model_name' => $model_name,
-      'model_dimension' => $dimension,
+      // Don't fetch dimension - lazy load
+      'model_dimension' => NULL,
     );
   }
 

@@ -15,7 +15,14 @@ class OpenAiEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
    *   Optional client instance; falls back to openai_get_api('openai').
    */
   public function __construct(array $config = [], $client = NULL) {
-    parent::__construct($config, $client ?: openai_get_api('openai'));
+    if ($client) {
+      parent::__construct($config, $client);
+    }
+    else {
+      $stripped = NULL;
+      $default_client = search_api_ai_openai_client_for_model('openai', $stripped);
+      parent::__construct($config, $default_client);
+    }
   }
 
   /**

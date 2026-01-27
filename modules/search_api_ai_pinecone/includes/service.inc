@@ -196,8 +196,9 @@ class PineconeService extends SearchApiAbstractService {
       return ['result count' => 0, 'results' => []];
     }
 
-    // Get query embedding using the appropriate provider.
+    // Get query embedding using the appropriate provider via compatibility helper.
     $stripped_model = NULL;
+
     if (function_exists('openai_get_api_for_model')) {
       $api = openai_get_api_for_model($model, $stripped_model);
       $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
@@ -229,10 +230,12 @@ class PineconeService extends SearchApiAbstractService {
     }
 
     if (!$api) {
-      throw new Exception('Failed to get API client for model: ' . $model);
+      watchdog('search_api_ai_pinecone', 'No OpenAI client available for model: @model', ['@model' => $model], WATCHDOG_ERROR);
+      return ['result count' => 0, 'results' => []];
     }
 
-    $query_embedding = $api->embedding($text, $model_to_use);
+    // Request embedding using the compatibility wrapper which understands different client shapes.
+    $query_embedding = search_api_ai_openai_call_embedding($api, $text, $model_to_use);
 
     if ($query_embedding === false || $query_embedding === null || !is_array($query_embedding)) {
       throw new Exception('Failed to retrieve embedding.');

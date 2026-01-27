@@ -8,41 +8,74 @@
 /**
  * Implements hook_autoload_info().
  */
-function search_api_ai_ollama_autoload_info() {
+function search_api_ai_olloma_autoload_info() {
   return array(
-    'OllamaEmbeddingsEngine' => 'includes/OllamaEmbeddingsEngine.inc',
+    'OllamaEmbeddingsEngine' => 'includes/OllomaEmbeddingsEngine.inc',
   );
 }
 
 /**
  * Implements hook_embedding_engine_info().
  */
-function search_api_ai_ollama_embedding_engine_info() {
-  $engines = array();
+function search_api_ai_olloma_embedding_engine_info() {
+   $engines = array();
 
-  // Get all Ollama models
-  // Note: We return ALL models since Ollama doesn't reliably indicate
-  // which models support embeddings. Users must know their models.
-  $api = openai_get_api('ollama');
-  if (!$api) {
-    watchdog('search_api_ai_ollama', 'Failed to get Ollama API client', array(), WATCHDOG_WARNING);
-    return $engines;
-  }
+   // Get all Ollama models
+   // Note: We return ALL models since Olloma doesn't reliably indicate
+   // which models support embeddings. Users must know their models.
+   // Resolve a client for the Olloma provider using our compatibility helper.
+   $stripped = NULL;
+  $api = search_api_ai_openai_client_for_model('olloma', $stripped);
+   if (!$api) {
+    watchdog('search_api_ai_olloma', 'Failed to get Olloma API client', array(), WATCHDOG_WARNING);
+     return $engines;
+   }
 
-  try {
-    $models = $api->getModels();
-    foreach ($models as $model_id => $model_name) {
-      $engines['ollama/' . $model_id] = array(
+   try {
+     $provider_models = NULL;
+     if (is_object($api) && method_exists($api, 'getModels')) {
+       $provider_models = $api->getModels();
+     }
+     elseif (is_object($api) && method_exists($api, 'listModels')) {
+       $provider_models = $api->listModels();
+     }
+     // Normalize into id=>name pairs
+     $normalized = [];
+     if (is_array($provider_models)) {
+       foreach ($provider_models as $k => $v) {
+         if (is_string($k) && is_string($v)) {
+           $normalized[$k] = $v;
+         }
+         elseif (is_string($v)) {
+           $normalized[$v] = $v;
+         }
+         elseif (is_object($v) || is_array($v)) {
+           $id = is_object($v) ? ($v->id ?? NULL) : ($v['id'] ?? NULL);
+           $name = is_object($v) ? ($v->name ?? NULL) : ($v['name'] ?? NULL);
+           if ($id) $normalized[$id] = $name ?: $id;
+         }
+       }
+     }
+     elseif (is_object($provider_models) && isset($provider_models->data) && is_array($provider_models->data)) {
+       foreach ($provider_models->data as $m) {
+         $id = is_object($m) && isset($m->id) ? $m->id : (is_array($m) && isset($m['id']) ? $m['id'] : NULL);
+         $name = is_object($m) && isset($m->name) ? $m->name : NULL;
+         if ($id) $normalized[$id] = $name ?: $id;
+       }
+     }
+
+    foreach ($normalized as $model_id => $model_name) {
+      $engines['olloma/' . $model_id] = array(
         'label' => t('Ollama: @model', array('@model' => $model_name)),
         'class' => 'OllamaEmbeddingsEngine',
-        'file' => 'includes/OllamaEmbeddingsEngine.inc',
-        'module' => 'search_api_ai_ollama',
+        'file' => 'includes/OllomaEmbeddingsEngine.inc',
+        'module' => 'search_api_ai_olloma',
         'model_id' => $model_id,
       );
     }
-  }
-  catch (Exception $e) {
-    watchdog('search_api_ai_ollama', 'Error fetching Ollama models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
-  }
-  return $engines;
-}
+   }
+   catch (Exception $e) {
+    watchdog('search_api_ai_olloma', 'Error fetching Olloma models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+   }
+   return $engines;
+ }

@@ -164,10 +164,8 @@ function search_api_ai_search_block_submit_callback() {
   if (!empty($block_id) && !empty($_SESSION['search_api_ai_search_block_settings'][$block_id])) {
     $settings = $_SESSION['search_api_ai_search_block_settings'][$block_id];
   }
-  // Always honor the stream flag from the request.
-  $settings['stream'] = $is_stream;
-
-  // For client-side animation, we always want the complete response (no server streaming)
+  // For client-side animation, we always want the complete response (no server streaming).
+  // The incoming stream flag is ignored on the server and handled client-side.
   $settings['stream'] = FALSE;
 
   $response = search_api_ai_search_block_get_response($query, $settings);
@@ -404,13 +402,13 @@ function _ai_search_block_defaults() {
 function search_api_ai_search_block_block_info() {
   // IMPORTANT: deltas here must match in _configure/_save/_view.
   $blocks['search_api_ai_search_block'] = array(
-    'info' => t('Search API AI Search'),
+    'info' => t('Search API AI Search Block'),
     'description' => t('Provides a search block that uses AI to enhance search results.'),
     'cache' => BACKDROP_CACHE_PER_ROLE,
   );
 
   $blocks['search_api_ai_search_block_response'] = array(
-    'info' => t('Search API AI Response'),
+    'info' => t('Search API AI Block Response'),
     'description' => t('Displays AI-generated responses to search queries.'),
   );
 
@@ -1244,7 +1242,42 @@ ARTICLES (Markdown; multiple results are separated by lines):
       ));
     }
 
+    // Provider-aware logging: attempt to record the start of this LLM call
+    $log_api = NULL;
+    if (is_object($api) && method_exists($api, 'recordLog')) {
+      $log_api = $api;
+    }
+    else {
+      // Try to resolve a provider-scoped API client for this model
+      try {
+        $probe_stripped = NULL;
+        $probe = search_api_ai_openai_client_for_model($llm_model, $probe_stripped);
+        if ($probe && method_exists($probe, 'recordLog')) {
+          $log_api = $probe;
+        }
+      } catch (Exception $e) {
+        // ignore
+      }
+    }
+    if ($log_api) {
+      try {
+        $log_api->recordLog('search_block_start', $model_to_use, ['query' => $prompt], NULL, TRUE, 0);
+      } catch (Exception $e) {
+        watchdog('search_api_ai_search_block', 'Failed to record start log: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+      }
+    }
+
     $resp = $api->chat($model_to_use, $messages, $llm_temp, 1200, $stream);
+
+    // Record finish log if available
+    if (!empty($log_api) && method_exists($log_api, 'recordLog')) {
+      try {
+        $len = is_string($resp) ? strlen($resp) : (is_object($resp) ? (property_exists($resp, 'content') ? strlen((string) $resp->content) : 0) : 0);
+        $log_api->recordLog('search_block_finish', $model_to_use, ['query' => substr($prompt,0,200), 'response_length' => $len], NULL, TRUE, 1);
+      } catch (Exception $e) {
+        watchdog('search_api_ai_search_block', 'Failed to record finish log: @m', ['@m' => $e->getMessage()], WATCHDOG_WARNING);
+      }
+    }
 
     // If streaming was requested and we got a streaming response, return it as-is
     // so the callback can handle the streaming chunks properly

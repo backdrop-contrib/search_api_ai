@@ -112,19 +112,41 @@ function search_api_ai_load_embeddings_engine($configuration) {
   }
 
   try {
-    // If your engine needs a client, build it here (example for OpenAI).
+    // If your engine needs a client, build it here.
     $client = NULL;
-    // Handle both 'openai' and OpenAI-specific embedding models like 'text-embedding-3-small'
-    if ($plugin_id === 'openai' || strpos($plugin_id, 'text-embedding-') === 0) {
-      if (function_exists('key_get_key_value')) {
-        $api_key_name = config_get('openai.settings', 'api_key');
-        $api_key = $api_key_name ? key_get_key_value($api_key_name) : NULL;
-        if (!empty($api_key) && class_exists('OpenAIApi')) {
-          $client = new OpenAIApi($api_key);
+
+    // Extract provider from model ID if prefixed (e.g., "openai/model-name")
+    // This is for OpenAI 2.x multi-provider support
+    $provider_id = 'openai'; // default
+    $model_without_prefix = $plugin_id;
+    if (strpos($plugin_id, '/') !== FALSE) {
+      list($provider_id, $model_without_prefix) = explode('/', $plugin_id, 2);
+    }
+
+    // OpenAI 2.x: Use provider-based API
+    // Resolve OpenAI client using compatibility helper.
+    if ($provider_id === 'openai' || function_exists('openai_get_api')) {
+      try {
+        $stripped = NULL;
+        $client = search_api_ai_openai_client_for_model($plugin_id, $stripped);
+        // If we resolved a stripped model, prefer that for the engine config later
+        if (!empty($stripped)) {
+          $model_without_prefix = $stripped;
         }
       }
+      catch (Exception $e) {
+        watchdog('search_api_ai', 'Failed to resolve OpenAI client for @model: @msg', ['@model' => $plugin_id, '@msg' => $e->getMessage()], WATCHDOG_WARNING);
+      }
     }
-    return new $def['class']($plugin_config, $client);
+
+    // Merge engine definition into config so model_id/model_name are passed to the class
+    $full_config = array_merge($plugin_config, [
+      'model_id' => $model_without_prefix, // unprefixed model name
+      'model_name' => $def['model_name'] ?? $model_without_prefix,
+      'model_dimension' => $def['model_dimension'] ?? ($plugin_config['dimension'] ?? 1536),
+    ]);
+
+    return new $def['class']($full_config, $client);
   }
   catch (Exception $e) {
     watchdog('search_api_ai', 'Failed to initialize embedding engine: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);
@@ -139,6 +161,9 @@ function search_api_ai_load_embeddings_engine($configuration) {
 function search_api_ai_get_embedding_engines_options() {
   $options = [];
   $engines = module_invoke_all('embedding_engine_info');
+
+  // Group engines by provider for optgroup support
+  $grouped = [];
 
   foreach ($engines as $id => $def) {
     if (empty($def['class']) || empty($def['file']) || empty($def['module'])) {
@@ -160,9 +185,42 @@ function search_api_ai_get_embedding_engines_options() {
     }
 
     if ($available) {
-      $options[$id] = $def['label'] ?? $id;
+      $label = $def['label'] ?? $id;
+
+      // Try to determine provider from model ID (e.g., "ollama/model-name")
+      $provider_label = 'Other';
+      if (strpos($id, '/') !== FALSE) {
+        // OpenAI 2.x: provider/model format
+        $parts = explode('/', $id, 2);
+        $provider_id = $parts[0];
+        if (function_exists('openai_get_provider_label')) {
+          $provider_label = openai_get_provider_label($provider_id);
+        }
+        else {
+          $provider_label = ucfirst($provider_id);
+        }
+      }
+      // Check if label contains provider info in parentheses: "model (Provider)"
+      elseif (preg_match('/\(([^)]+)\)\s*$/', $label, $matches)) {
+        $provider_label = $matches[1];
+      }
+      // Check if label starts with "Provider: " (OpenAI 1.x format)
+      elseif (preg_match('/^([^:]+):\s/', $label, $matches)) {
+        $provider_label = $matches[1];
+      }
+
+      if (!isset($grouped[$provider_label])) {
+        $grouped[$provider_label] = [];
+      }
+      $grouped[$provider_label][$id] = $label;
     }
   }
+
+  // Sort providers alphabetically
+  ksort($grouped);
+
+  // Return grouped array (Backdrop select supports optgroups)
+  $options = $grouped;
 
   if (empty($options)) {
     backdrop_set_message(t('No embedding engines available. Please enable an embedding engine module.'), 'warning');
