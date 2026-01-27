@@ -55,7 +55,7 @@ async function run() {
       return;
     }
 
-    const fileBlockRegex = /FILE:\s*([^\n]+)\n```[^\n]*\n([\s\S]+?)```/gi;
+    const fileBlockRegex = /FILE:\s*([^\n]+)\n```[^\n]*\n((?:(?!```)[\s\S])*?)```/gi;
     let match;
     const filesToUpdate = [];
 
@@ -120,7 +120,7 @@ async function run() {
           path: file.path,
           ref: branchName,
         });
-        if (!Array.isArray(existingFile)) {
+        if (existingFile && existingFile.type === 'file') {
           fileSha = existingFile.sha;
         }
       } catch (error) {
