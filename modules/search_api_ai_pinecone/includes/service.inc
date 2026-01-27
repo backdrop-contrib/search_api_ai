@@ -231,7 +231,7 @@ class PineconeService extends SearchApiAbstractService {
 
     if (!$api) {
       watchdog('search_api_ai_pinecone', 'No OpenAI client available for model: @model', ['@model' => $model], WATCHDOG_ERROR);
-      return ['result count' => 0, 'results' => []];
+      throw new Exception('No OpenAI client available for model: ' . $model);
     }
 
     // Request embedding using the compatibility wrapper which understands different client shapes.
