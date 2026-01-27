@@ -360,7 +360,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     else {
       // Validate dimension; if wrong, fail loudly (dropping data would be risky).
       try {
-        $dim = db_query("SELECT attndims FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
+        $dim = db_query("SELECT atttypmod - 4 FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
       }
       catch (Exception $e) {
         $dim = NULL;
