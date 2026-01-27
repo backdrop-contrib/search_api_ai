@@ -743,9 +743,6 @@ function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) 
   backdrop_set_message(t('Embedding engine configuration has been saved.'));
 }
 
-/**
- * Inject embeddings while indexing.
- */
 function search_api_ai_search_api_index_items_alter(array &$items, SearchApiIndex $index) {
   global $search_api_ai_vectors;
   if (!isset($search_api_ai_vectors)) $search_api_ai_vectors = [];
