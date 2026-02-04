@@ -557,30 +557,16 @@ function search_api_ai_search_block_block_configure($delta = '', $settings = arr
     $models = $cache->data;
   }
   else {
-    // Get chat models from all enabled providers
+    // Get chat models from all enabled providers (keep grouped by provider)
     $models = [];
     if (function_exists('openai_get_all_chat_models')) {
-      $all_models = openai_get_all_chat_models();
-      // Flatten the grouped models into a simple array
-      if (!empty($all_models) && is_array($all_models)) {
-        foreach ($all_models as $group_label => $group_items) {
-          if (is_array($group_items)) {
-            foreach ($group_items as $k => $v) {
-              $models[$k] = $v;
-            }
-          }
-          else {
-            // Not grouped - add directly
-            $models[$group_label] = $group_items;
-          }
-        }
-      }
+      $models = openai_get_all_chat_models();
     }
 
     // Fallback to OpenAI only if no models found
     if (empty($models)) {
       $api = new OpenAIApi($apiKey);
-      $models = $api->filterModels(['gpt']);
+      $models = ['OpenAI' => $api->filterModels(['gpt'])];
     }
 
     // Cache for 1 hour.

@@ -330,13 +330,8 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
    * Ensure pgvector extension, table and index exist with correct dimension.
    */
   protected function ensureTable($schema, $table, $dimension) {
-    // Sanitize schema name to avoid SQL injection and ensure a valid identifier.
-    $schema = preg_replace('/[^a-zA-Z0-9_]/', '', $schema);
-    if ($schema === '') {
-      $schema = 'public';
-    }
     // Create schema if not exists.
-    db_query('CREATE SCHEMA IF NOT EXISTS ' . db_escape_table($schema));
+    db_query('CREATE SCHEMA IF NOT EXISTS ' . $schema);
     // Enable extension.
     db_query('CREATE EXTENSION IF NOT EXISTS vector');
 
@@ -365,7 +360,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     else {
       // Validate dimension; if wrong, fail loudly (dropping data would be risky).
       try {
-        $dim = db_query("SELECT atttypmod - 4 FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
+        $dim = db_query("SELECT attndims FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
       }
       catch (Exception $e) {
         $dim = NULL;
@@ -406,4 +401,3 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     }
   }
 }
-

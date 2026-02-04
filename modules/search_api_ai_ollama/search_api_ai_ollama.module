@@ -10,7 +10,7 @@
  */
 function search_api_ai_ollama_autoload_info() {
   return array(
-    'OllamaEmbeddingsEngine' => 'includes/OllamaEmbeddingsEngine.inc',
+    'OllamaEmbeddingsEngine' => 'includes/OllomaEmbeddingsEngine.inc',
   );
 }
 
@@ -64,18 +64,18 @@ function search_api_ai_ollama_embedding_engine_info() {
        }
      }
 
-    foreach ($normalized as $model_id => $model_name) {
-      $engines['ollama/' . $model_id] = array(
-        'label' => t('Ollama: @model', array('@model' => $model_name)),
-        'class' => 'OllamaEmbeddingsEngine',
-        'file' => 'includes/OllamaEmbeddingsEngine.inc',
-        'module' => 'search_api_ai_ollama',
-        'model_id' => $model_id,
-      );
+     foreach ($normalized as $model_id => $model_name) {
+       $engines['ollama/' . $model_id] = array(
+         'label' => $model_name,  // Just model name - grouping happens via qualified ID
+         'class' => 'OllamaEmbeddingsEngine',
+         'file' => 'includes/OllomaEmbeddingsEngine.inc',
+         'module' => 'search_api_ai_ollama',
+         'model_id' => $model_id,
+       );
+     }
     }
-   }
-   catch (Exception $e) {
-    watchdog('search_api_ai_ollama', 'Error fetching Ollama models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
-   }
+    catch (Exception $e) {
+     watchdog('search_api_ai_ollama', 'Error fetching Ollama models: @error', array('@error' => $e->getMessage()), WATCHDOG_ERROR);
+    }
    return $engines;
  }

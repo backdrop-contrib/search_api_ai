@@ -186,23 +186,22 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
   // Load previously stored messages.
   $messages = isset($form_state['storage']['messages']) ? $form_state['storage']['messages'] : [];
   $filtered_messages = [];
-  $first_user_found = FALSE;
 
-  // Get the value of the system messages checkbox, default to unchecked.
-  $show_system_messages = !empty($form_state['values']['system_messages']);
+  // Get the value of the debug messages checkbox, default to unchecked.
+  $show_debug_messages = !empty($form_state['values']['system_messages']);
 
   foreach ($messages as $msg) {
-    // Only include system messages if the checkbox is checked.
-    if ($msg['role'] === 'system' && !$show_system_messages) {
+    // Hide system and user messages (which contain huge RAG context) unless debugging is enabled
+    if (($msg['role'] === 'system' || $msg['role'] === 'user') && !$show_debug_messages) {
       continue;
     }
-    if ($msg['role'] === 'user') {
-      if (!$first_user_found) {
-        $filtered_messages[] = $msg;
-        $first_user_found = TRUE; // Only include the first user message
-      }
-    } elseif ($msg['role'] === 'assistant' || $msg['role'] === 'system') {
-      $filtered_messages[] = $msg; // Always include assistant messages, and system if allowed
+    // Always show assistant messages (the actual answers)
+    if ($msg['role'] === 'assistant') {
+      $filtered_messages[] = $msg;
+    }
+    // Show system/user messages only when debugging
+    elseif ($show_debug_messages) {
+      $filtered_messages[] = $msg;
     }
   }
   $form['messages'] = [
@@ -238,7 +237,8 @@ function search_api_ai_explorer_search_form($form, &$form_state) {
   ];
   $form['options']['system_messages'] = [
     '#type' => 'checkbox',
-    '#title' => t('Show system messages'),
+    '#title' => t('Show debug messages (system + user context)'),
+    '#description' => t('When enabled, displays the full system prompts and RAG context sent to the LLM. Useful for debugging but can be very verbose.'),
   ];
   $form['actions'] = ['#type' => 'actions'];
   $form['actions']['submit'] = [
@@ -303,12 +303,23 @@ function search_api_ai_extract_contextual_sources($backend_class, $vector_result
       continue;
     }
 
-    // Title and snippet
+    // Title and full content
     $title = method_exists($entity, 'label') ? check_plain($entity->label()) :
       (!empty($entity->title) ? check_plain($entity->title) : t('Untitled'));
     $uri = $entity->uri();
     $url = url($uri['path']);
-    $snippet = !empty($metadata['content']) ? check_plain(substr($metadata['content'], 0, 500)) : '';
+
+    // Use the chunk content from the vector search result - these chunks are already
+    // the most semantically relevant content found by the embedding search.
+    // No need to load full nodes; the chunks are optimized for RAG.
+    $chunk_content = !empty($metadata['content']) ? $metadata['content'] : '';
+
+    // Clean up the chunk text
+    $chunk_content = strip_tags($chunk_content);
+    $chunk_content = trim($chunk_content);
+
+    $snippet = !empty($chunk_content) ? check_plain($chunk_content) : '';
+
 
     // Paragraph parent lookup (optional)
     if ($datasource_id === 'paragraphs_item') {
@@ -542,44 +553,45 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   $score_threshold = isset($form_state['values']['score_threshold']) ? floatval($form_state['values']['score_threshold']) : 0.5;
   $sources = search_api_ai_extract_contextual_sources($backend_class, $vector_results, $score_threshold);
 
-  $document_links = [];
-  $formatted_sources = [];
-  foreach ($sources as $src) {
+  $source_citations = [];  // For UI display after the answer
+  $content_chunks = [];    // Clean text for LLM (no URLs/HTML)
+
+  foreach ($sources as $idx => $src) {
     if (!empty($src['error'])) {
       backdrop_set_message($src['error'], 'warning');
       continue;
     }
-    $formatted_sources[] = "<a href='{$src['url']}'>{$src['title']}</a>: {$src['snippet']}";
-    $document_links[] = "<a href='{$src['url']}'>{$src['title']}</a>";
+
+    // Build citation for UI (with clickable link)
+    $source_citations[] = [
+      'title' => $src['title'],
+      'url' => $src['url'],
+      'number' => $idx + 1,
+    ];
+
+    // Build clean content chunk for LLM (title + content, no URLs)
+    // The LLM doesn't need URLs - it can't fetch them
+    $content_chunks[] = "[Source " . ($idx + 1) . ": {$src['title']}]\n{$src['snippet']}";
   }
 
-  // Compose chat prompt and finish as before...
-  // Initialize AI Messages (only once!)
-  $messages = [
-    [
-      'role' => 'system',
-      'content' => "You are an AI Agent embedded in a Backdrop CMS website.
-                  Your job is to answer user questions using a local vector database through the RAG tool.
-                  You must only use content from this site — external sources are not allowed.
-                  Do not fabricate or guess any information or links.
-                  When a user submits a query:
-                  Search the vector database for up to 5 relevant nodes, unless the question is unusually complex.
-                  Use only the retrieved content to generate your answer.
-                  Limit your response to 5 sentences or less if possible.",
-    ],
-  ];
+  // Compose chat prompt - send only content to LLM, URLs are for post-processing
+  $messages = [];
 
-  // Add the user/context message (do NOT overwrite $messages!)
-  if (!empty($formatted_sources)) {
-    $combined_context = implode("\n\n", array_map('strip_tags', $formatted_sources));
+  // Build concise RAG instruction prefix for the user message
+  // (The site context system message already has the main guardrails)
+  $rag_instructions = "Answer using ONLY the sources below. Each source is numbered. Be concise and cite source numbers when helpful.";
+
+  // Add the user/context message with RAG instructions prepended
+  if (!empty($content_chunks)) {
+    $combined_content = implode("\n\n---\n\n", $content_chunks);
     $messages[] = [
       'role' => 'user',
-      'content' => "Here is relevant source content:\n\n$combined_context\n\nUsing only the information above, answer the question: $query_text",
+      'content' => "$rag_instructions\n\n=== SOURCES ===\n\n$combined_content\n\n=== QUESTION ===\n\n$query_text",
     ];
   } else {
     $messages[] = [
       'role' => 'user',
-      'content' => $query_text,
+      'content' => "$rag_instructions\n\n$query_text",
     ];
   }
 
@@ -592,15 +604,15 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
     } else {
       $ai_response_text = 'No response provided.';
     }
-    $ai_response_text = preg_replace('/<a href=[^>]+>([^<]+)<\/a>/', '$1', $ai_response_text);
-    $document_links = array_unique($document_links);
-    if (!empty($document_links)) {
-      $ai_response_text .= "<br><br><strong>For more detailed information, you can refer to this content:</strong><ol>";
-      foreach ($document_links as $link) {
-        $ai_response_text .= "<li>$link</li>";
+
+    // Append source citations with clickable links for human reference
+    if (!empty($source_citations)) {
+      $ai_response_text .= "\n\n---\n\n**Sources:**\n";
+      foreach ($source_citations as $citation) {
+        $ai_response_text .= "\n" . $citation['number'] . ". <a href=\"{$citation['url']}\">{$citation['title']}</a>";
       }
-      $ai_response_text .= "</ol>";
     }
+
     $messages[] = [
       'role' => 'assistant',
       'content' => $ai_response_text,
