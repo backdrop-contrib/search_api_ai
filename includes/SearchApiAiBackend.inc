@@ -223,7 +223,6 @@ function search_api_ai_get_embedding_engines_options() {
   // Return grouped array (Backdrop select supports optgroups)
   $options = $grouped;
 
-
   if (empty($options)) {
     backdrop_set_message(t('No embedding engines available. Please enable an embedding engine module.'), 'warning');
   }
