@@ -578,7 +578,10 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
   $messages = [];
 
   // Build concise RAG instruction prefix for the user message
-  // (The site context system message already has the main guardrails)
+  // The site context system message provides the main guardrails when the
+  // optional `openai_site_context` module is enabled. If that module is not
+  // present, we add a conservative default system message so the model has
+  // clear instructions and guardrails.
   $rag_instructions = "Answer using ONLY the sources below. Each source is numbered. Be concise and cite source numbers when helpful.";
 
   // Add the user/context message with RAG instructions prepended
@@ -594,6 +597,33 @@ function search_api_ai_explorer_search_form_submit($form, &$form_state) {
       'content' => "$rag_instructions\n\n$query_text",
     ];
   }
+
+  // Prepend a system message. Prefer openai_site_context helpers if available.
+  $system_message_text = '';
+  if (module_exists('openai_site_context')) {
+    if (function_exists('openai_site_context_get_prompt')) {
+      $system_message_text = trim(openai_site_context_get_prompt());
+    }
+    elseif (function_exists('openai_site_context_get_system_message')) {
+      $system_message_text = trim(openai_site_context_get_system_message());
+    }
+    // Allow the site context module a chance to alter messages via its hook,
+    // but keep behaviour minimal here – the module should provide the text.
+  }
+
+  if (empty($system_message_text)) {
+    // Conservative default system prompt / guardrails used when no site-level
+    // system prompt is configured.
+    $system_message_text = "You are an AI assistant embedded in a Backdrop CMS website. "
+      . "Answer concisely using ONLY the provided numbered sources; do not invent facts or make unsupported claims. "
+      . "Cite source numbers from the provided sources when relevant. Be polite and avoid revealing internal implementation details.";
+  }
+
+  // Insert at the front so the model receives system instructions first.
+  array_unshift($messages, [
+    'role' => 'system',
+    'content' => $system_message_text,
+  ]);
 
 
   // **Call AI Chat Model**
