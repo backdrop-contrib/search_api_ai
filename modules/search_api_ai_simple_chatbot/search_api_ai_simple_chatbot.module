@@ -468,8 +468,12 @@ function search_api_ai_simple_chatbot_form_submit($form, &$form_state) {
         // already the most semantically relevant content found by embedding search
         $chunk_content = $match['metadata']['content'] ?? $match['content'] ?? '';
 
-        // Clean up the chunk text
+        // Clean up the chunk text and limit size to control token usage/costs.
         $snippet = trim(html_entity_decode(strip_tags($chunk_content), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+        // Truncate to a reasonable default (600 chars) to avoid excessive tokens.
+        if (mb_strlen($snippet) > 600) {
+          $snippet = mb_substr($snippet, 0, 600) . '...';
+        }
 
 
         // Anchor (for display sources only), using relative URL.

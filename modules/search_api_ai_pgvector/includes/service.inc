@@ -201,9 +201,8 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     $index = $query->getIndex();
     $index_options = isset($index->options) ? $index->options : [];
 
-    $model = !empty($index_options['embedding_settings']['embeddings_engine'])
-      ? $index_options['embedding_settings']['embeddings_engine']
-      : (!empty($this->options['embedding_model']) ? $this->options['embedding_model'] : NULL);
+    // Model selection priority: index embedding setting → service `embedding_model` → service `embeddings_engine`.
+    $model = $index_options['embedding_settings']['embeddings_engine'] ?? $this->options['embedding_model'] ?? $this->options['embeddings_engine'] ?? NULL;
 
     if (empty($model)) {
       watchdog('search_api_ai_pgvector', 'No model configured!', [], WATCHDOG_ERROR);

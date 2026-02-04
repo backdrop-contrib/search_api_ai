@@ -15,7 +15,7 @@ Provides Ollama embedding model integration for Search API AI.
 This module returns **ALL** Ollama models because Ollama doesn't provide reliable metadata to identify which models support embeddings. You must know which of your Ollama models support embeddings and select accordingly.
 
 Common Ollama embedding models:
-- `nomic-embed-text` (768 dimensions)
+-- `nomic-embed-text` (768 dimensions)
 - `mxbai-embed-large` (1024 dimensions)
 - `all-minilm` (384 dimensions)
 

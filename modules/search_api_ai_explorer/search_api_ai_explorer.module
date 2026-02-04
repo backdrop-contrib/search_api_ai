@@ -314,11 +314,14 @@ function search_api_ai_extract_contextual_sources($backend_class, $vector_result
     // No need to load full nodes; the chunks are optimized for RAG.
     $chunk_content = !empty($metadata['content']) ? $metadata['content'] : '';
 
-    // Clean up the chunk text
+    // Clean up the chunk text and limit size to control token usage/costs.
     $chunk_content = strip_tags($chunk_content);
     $chunk_content = trim($chunk_content);
-
     $snippet = !empty($chunk_content) ? check_plain($chunk_content) : '';
+    // Truncate to a reasonable default (600 chars) to avoid excessive tokens.
+    if (mb_strlen($snippet) > 600) {
+      $snippet = mb_substr($snippet, 0, 600) . '...';
+    }
 
 
     // Paragraph parent lookup (optional)

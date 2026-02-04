@@ -526,7 +526,7 @@ function search_api_ai_form_alter(&$form, &$form_state, $form_id) {
     }
 
     $selected_engine = $settings['embeddings_engine'] ?? '';
-    $dimension_value = $settings['embeddings_engine_configuration']['dimension'] ?? 768;
+    $dimension_value = $settings['embeddings_engine_configuration']['dimension'] ?? 1536;
 
     // Use the helper function to get grouped embedding engines by provider
     $options = search_api_ai_get_embedding_engines_options();
@@ -646,7 +646,7 @@ function search_api_ai_server_selection_callback($form, &$form_state) {
  */
 function search_api_ai_update_embedding_dimension($form, &$form_state) {
   $selected_engine = $form_state['values']['embedding_settings']['embeddings_engine'] ?? NULL;
-  $dimension_value = 1536; // Default fallback
+  $dimension_value = 768; // Default fallback
 
   $all_engines = module_invoke_all('embedding_engine_info');
   if ($selected_engine && isset($all_engines[$selected_engine])) {
@@ -724,7 +724,7 @@ function search_api_ai_embedding_settings_submit($form, &$form_state) {
  */
 function search_api_ai_embedding_engine_config_form_submit($form, &$form_state) {
   $selected_engine = $form_state['values']['options']['embeddings_engine'] ?? '';
-  $engine_config = $form_state['values']['options']['embeddings_engine_configuration'] ?? ['dimension' => 768];
+  $engine_config = $form_state['values']['options']['embeddings_engine_configuration'] ?? ['dimension' => 1536];
 
   $all_engines = module_invoke_all('embedding_engine_info');
 

@@ -55,7 +55,7 @@ abstract class SearchApiAiBackendPluginBase {
   protected function defaultEngineConfiguration() {
     return array(
       'embeddings_engine' => '',
-      'embeddings_engine_configuration' => array('dimension' => 768),
+      'embeddings_engine_configuration' => array('dimension' => 1536),
     );
   }
 
@@ -103,7 +103,7 @@ abstract class SearchApiAiBackendPluginBase {
       '#title' => t('Embedding Dimension'),
       '#default_value' => isset($this->configuration['embeddings_engine_configuration']['dimension'])
         ? $this->configuration['embeddings_engine_configuration']['dimension']
-        : 768,
+        : 1536,
       '#description' => t('The dimension of the embeddings.'),
     );
 
