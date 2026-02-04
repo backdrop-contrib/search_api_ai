@@ -274,8 +274,16 @@ function search_api_ai_update_embedding_configuration_form($form, &$form_state) 
     // Fallback: try instantiating the engine class
     // This handles any legacy engines or engines without model_id
     else {
-      module_load_include('inc', $def['module'], $def['file']);
-      if (class_exists($def['class'])) {
+      $include_result = module_load_include('inc', $def['module'], $def['file']);
+      if ($include_result === FALSE) {
+        watchdog(
+          'search_api_ai',
+          'Failed to load embedding engine file @file for module @module when determining embedding dimension.',
+          array('@file' => $def['file'], '@module' => $def['module']),
+          WATCHDOG_ERROR
+        );
+      }
+      elseif (class_exists($def['class'])) {
         // Build config with model metadata from the engine definition
         $config = [];
         if (!empty($def['model_dimension'])) {
