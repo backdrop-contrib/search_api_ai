@@ -892,8 +892,19 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
     if ($main_content_field == 'search_api_viewed') {
       // Render entity and remove admin markup (Edit/Delete, contextual links, etc.)
       // to prevent them from being stored in vector embeddings.
-      // In Backdrop, entity_view() accepts an array of entities keyed by ID.
-      $view = entity_view($entity_type, [$entity_id => $entity], $view_mode);
+      // Use the entity controller's view() which returns a render array
+      // keyed by [$entity_type][$entity_id] (the structure expected below).
+      // Previous code passed $entity_type (string) to entity_view(), causing
+      // a TypeError. Prefer controller->view() and fall back to
+      // entity_view($entity, $view_mode) wrapped into the same shape.
+      $controller = entity_get_controller($entity_type);
+      if (is_object($controller) && method_exists($controller, 'view')) {
+        $view = $controller->view([$entity_id => $entity], $view_mode);
+      }
+      else {
+        $single = entity_view($entity, $view_mode);
+        $view = [$entity_type => [$entity_id => $single]];
+      }
 
       // Remove all admin/contextual elements from render array before rendering
       if (isset($view[$entity_type][$entity_id])) {
