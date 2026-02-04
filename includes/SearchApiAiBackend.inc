@@ -298,7 +298,7 @@ function search_api_ai_update_embedding_configuration_form($form, &$form_state) 
       }
     }
   } catch (Exception $e) {
-    watchdog('search_api_ai', 'Failed to detect dimension for @id: @m', ['@id' => $selected, '@m' => $e->getMessage()], WATCHDOG_WARNING);
+    watchdog('search_api_ai', 'Failed to detect dimension for @id: @m', ['@id' => $selected, '@m' => $e->getMessage()], WATCHDOG_ERROR);
   }
 
   // Reflect into form/form_state.
