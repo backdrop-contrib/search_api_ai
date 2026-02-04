@@ -241,7 +241,16 @@ class PineconeService extends SearchApiAbstractService {
       : search_api_ai_get_embedding_dimension();
 
     if (empty($query_embedding) || !is_array($query_embedding) || count($query_embedding) !== $expected_dimension) {
-      watchdog('search_api_ai_pinecone', 'Query embedding dimension mismatch or empty.', [], WATCHDOG_ERROR);
+      $actual_dimension = (is_array($query_embedding) && !empty($query_embedding)) ? count($query_embedding) : 0;
+      watchdog(
+        'search_api_ai_pinecone',
+        'Query embedding dimension mismatch or empty. Expected: @expected_dim, actual: @actual_dim.',
+        [
+          '@expected_dim' => $expected_dimension,
+          '@actual_dim' => $actual_dimension,
+        ],
+        WATCHDOG_ERROR
+      );
       return ['result count' => 0, 'results' => []];
     }
 
