@@ -692,7 +692,7 @@ function search_api_ai_update_embedding_dimension($form, &$form_state) {
       watchdog('search_api_ai', 'Failed to update dimension for @engine: @message', [
         '@engine' => $selected_engine,
         '@message' => $e->getMessage(),
-      ], WATCHDOG_WARNING);
+      ], WATCHDOG_ERROR);
     }
   }
 
