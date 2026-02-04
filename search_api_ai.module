@@ -83,7 +83,7 @@ function search_api_ai_openai_client_for_model($model, & $stripped_model = NULL)
   if (function_exists('openai_get_api_for_model')) {
     try {
       $client = openai_get_api_for_model($model, $stripped_model);
-      if (!empty($stripped_model)) {
+      if ($client !== NULL) {
         return $client;
       }
     }
