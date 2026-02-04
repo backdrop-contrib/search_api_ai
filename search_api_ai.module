@@ -890,12 +890,10 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
 
     $cleaned_text = '';
     if ($main_content_field == 'search_api_viewed') {
-      // Render entity and remove admin markup (EditDelete, contextual links, etc.)
-      // to prevent them from being stored in vector embeddings
-      // entity_view() expects a single EntityInterface; when rendering a set
-      // of entities keyed by type/id use entity_view_multiple(). The existing
-      // code passed strings/arrays which caused a TypeError in PHP 8+.
-      $view = entity_view_multiple($entity_type, [$entity_id => $entity], $view_mode);
+      // Render entity and remove admin markup (Edit/Delete, contextual links, etc.)
+      // to prevent them from being stored in vector embeddings.
+      // In Backdrop, entity_view() accepts an array of entities keyed by ID.
+      $view = entity_view($entity_type, [$entity_id => $entity], $view_mode);
 
       // Remove all admin/contextual elements from render array before rendering
       if (isset($view[$entity_type][$entity_id])) {
