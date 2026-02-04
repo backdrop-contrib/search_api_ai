@@ -193,6 +193,7 @@ function search_api_ai_get_embedding_engines_options() {
         // OpenAI 2.x: provider/model format
         $parts = explode('/', $id, 2);
         $provider_id = $parts[0];
+
         if (function_exists('openai_get_provider_label')) {
           $provider_label = openai_get_provider_label($provider_id);
         }
@@ -200,12 +201,12 @@ function search_api_ai_get_embedding_engines_options() {
           $provider_label = ucfirst($provider_id);
         }
       }
+      // Detect OpenAI models by common patterns (for OpenAI 1.x without prefix)
+      elseif (preg_match('/^(text-embedding|gpt|davinci|curie|babbage|ada)/i', $id)) {
+        $provider_label = 'OpenAI';
+      }
       // Check if label contains provider info in parentheses: "model (Provider)"
       elseif (preg_match('/\(([^)]+)\)\s*$/', $label, $matches)) {
-        $provider_label = $matches[1];
-      }
-      // Check if label starts with "Provider: " (OpenAI 1.x format)
-      elseif (preg_match('/^([^:]+):\s/', $label, $matches)) {
         $provider_label = $matches[1];
       }
 
@@ -225,12 +226,16 @@ function search_api_ai_get_embedding_engines_options() {
   if (empty($options)) {
     backdrop_set_message(t('No embedding engines available. Please enable an embedding engine module.'), 'warning');
   }
-
   return $options;
 }
 
 /**
  * AJAX callback to update the engine configuration (dimension).
+ *
+ * Compatible with both OpenAI 1.x and 2.x:
+ * - OpenAI 2.x: Uses provider/model format (e.g., "openai/text-embedding-3-small")
+ * - OpenAI 1.x: Uses model ID only (e.g., "text-embedding-ada-002")
+ * Both include 'model_id' in their engine definition, so openai_get_embedding_dimension() works for both.
  */
 function search_api_ai_update_embedding_configuration_form($form, &$form_state) {
   $selected = $form_state['values']['embeddings_engine'] ?? NULL;
@@ -255,13 +260,53 @@ function search_api_ai_update_embedding_configuration_form($form, &$form_state) 
 
   $dimension_value = 1536; // sane fallback
   try {
-    // Build minimal constructor args; avoid network calls here.
-    $engine = new $def['class']([], NULL);
-    if (method_exists($engine, 'getDimension')) {
-      $dimension_value = (int) $engine->getDimension();
+    // For per-model engines (both OpenAI 1.x and 2.x), use openai_get_embedding_dimension
+    // This function tries dynamic detection first, then falls back to known dimensions
+    if (!empty($def['model_id']) && function_exists('openai_get_embedding_dimension')) {
+      // Extract provider from selected engine ID (e.g., "openai/text-embedding-3-small")
+      // For OpenAI 1.x, there's no slash, so default to 'openai'
+      $provider_id = 'openai'; // default
+      if (strpos($selected, '/') !== FALSE) {
+        list($provider_id, ) = explode('/', $selected, 2);
+      }
+      $dimension_value = openai_get_embedding_dimension($def['model_id'], $provider_id);
+    }
+    // Fallback: try instantiating the engine class
+    // This handles any legacy engines or engines without model_id
+    else {
+      $include_result = module_load_include('inc', $def['module'], $def['file']);
+      if ($include_result === FALSE) {
+        watchdog(
+          'search_api_ai',
+          'Failed to load embedding engine file @file for module @module when determining embedding dimension.',
+          array('@file' => $def['file'], '@module' => $def['module']),
+          WATCHDOG_ERROR
+        );
+      }
+      elseif (class_exists($def['class'])) {
+        // Build config with model metadata from the engine definition
+        $config = [];
+        if (!empty($def['model_dimension'])) {
+          $config['dimension'] = $def['model_dimension'];
+        }
+        if (!empty($def['model_id'])) {
+          $config['model_id'] = $def['model_id'];
+        }
+        if (!empty($def['model_name'])) {
+          $config['model_name'] = $def['model_name'];
+        }
+
+        $engine = new $def['class']($config, NULL);
+        if (method_exists($engine, 'getDimension')) {
+          $dim = $engine->getDimension();
+          if ($dim > 0) {
+            $dimension_value = (int) $dim;
+          }
+        }
+      }
     }
   } catch (Exception $e) {
-    watchdog('search_api_ai', 'Failed to init engine @id in AJAX: @m', ['@id' => $selected, '@m' => $e->getMessage()], WATCHDOG_ERROR);
+    watchdog('search_api_ai', 'Failed to detect dimension for @id: @m', ['@id' => $selected, '@m' => $e->getMessage()], WATCHDOG_ERROR);
   }
 
   // Reflect into form/form_state.

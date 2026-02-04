@@ -168,10 +168,8 @@ class PineconeService extends SearchApiAbstractService {
     $index = $query->getIndex();
     $index_options = isset($index->options) ? $index->options : [];
 
-    // Model selection priority: index → service options.
-    $model = !empty($index_options['embedding_settings']['embeddings_engine'])
-      ? $index_options['embedding_settings']['embeddings_engine']
-      : (!empty($this->options['embeddings_engine']) ? $this->options['embeddings_engine'] : NULL);
+    // Model selection priority: index embedding setting → service `embedding_model` → service `embeddings_engine`.
+    $model = $index_options['embedding_settings']['embeddings_engine'] ?? $this->options['embedding_model'] ?? $this->options['embeddings_engine'] ?? NULL;
 
     if (empty($model)) {
       watchdog(
@@ -198,46 +196,38 @@ class PineconeService extends SearchApiAbstractService {
 
     // Get query embedding using the appropriate provider via compatibility helper.
     $stripped_model = NULL;
+    $api = search_api_ai_openai_client_for_model($model, $stripped_model);
+    $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
 
-    if (function_exists('openai_get_api_for_model')) {
-      $api = openai_get_api_for_model($model, $stripped_model);
-      $model_to_use = !empty($stripped_model) ? $stripped_model : $model;
-      watchdog('search_api_ai_pinecone', 'Search embedding: model=@model, stripped=@stripped, text_len=@len, api_class=@class', [
-        '@model' => $model,
-        '@stripped' => $stripped_model,
-        '@len' => strlen($text),
-        '@class' => get_class($api),
-      ], WATCHDOG_DEBUG);
+    if ($api && method_exists($api, 'recordLog')) {
+      $api->recordLog('search_embedding', $model, ['text_len' => strlen($text)], NULL, TRUE, 0);
     }
-    else {
-      // Fallback to OpenAI API directly if function doesn't exist.
-      $openai_config = config('openai.settings');
-      $api_key = key_get_key_value($openai_config->get('api_key'));
-      // Check if OpenAIApi class exists and API key is valid before instantiation.
-      if (!class_exists('OpenAIApi')) {
-        throw new Exception('OpenAIApi class not found. Please ensure the OpenAI PHP client is installed and included.');
-      }
-      if (empty($api_key)) {
-        throw new Exception('OpenAI API key is missing or invalid.');
-      }
+
+    // Final fallback: if helper didn't return a client, try legacy instantiation.
+    if (!$api) {
       try {
-        $api = new OpenAIApi($api_key);
+        $openai_config = config('openai.settings');
+        $api_key = key_get_key_value($openai_config->get('api_key'));
+        if (!empty($api_key) && class_exists('OpenAIApi')) {
+          $api = new OpenAIApi($api_key);
+          $model_to_use = $model;
+        }
       }
       catch (Exception $e) {
-        throw new Exception('Failed to instantiate OpenAIApi: ' . $e->getMessage());
+        watchdog('search_api_ai_pinecone', 'Failed to initialize OpenAI client for embeddings: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
+        return ['result count' => 0, 'results' => []];
       }
-      $model_to_use = $model;
     }
 
     if (!$api) {
       watchdog('search_api_ai_pinecone', 'No OpenAI client available for model: @model', ['@model' => $model], WATCHDOG_ERROR);
-      throw new Exception('No OpenAI client available for model: ' . $model);
+      return ['result count' => 0, 'results' => []];
     }
 
     // Request embedding using the compatibility wrapper which understands different client shapes.
     $query_embedding = search_api_ai_openai_call_embedding($api, $text, $model_to_use);
 
-    if ($query_embedding === false || $query_embedding === null || !is_array($query_embedding)) {
+    if (empty($query_embedding)) {
       throw new Exception('Failed to retrieve embedding.');
     }
 
@@ -246,13 +236,14 @@ class PineconeService extends SearchApiAbstractService {
       ? (int) $index->options['embedding_settings']['embeddings_engine_configuration']['dimension']
       : search_api_ai_get_embedding_dimension();
 
-    if (empty($query_embedding) || !is_array($query_embedding) || count($query_embedding) !== $expected_dimension) {
+    if (!is_array($query_embedding) || count($query_embedding) !== $expected_dimension) {
+      $actual_dimension = (is_array($query_embedding) && !empty($query_embedding)) ? count($query_embedding) : 0;
       watchdog(
         'search_api_ai_pinecone',
-        'Query embedding dimension mismatch or empty. Actual: @actual, Expected: @expected.',
+        'Query embedding dimension mismatch or empty. Expected: @expected_dim, actual: @actual_dim.',
         [
-          '@actual' => is_array($query_embedding) ? count($query_embedding) : 'N/A',
-          '@expected' => $expected_dimension,
+          '@expected_dim' => $expected_dimension,
+          '@actual_dim' => $actual_dimension,
         ],
         WATCHDOG_ERROR
       );

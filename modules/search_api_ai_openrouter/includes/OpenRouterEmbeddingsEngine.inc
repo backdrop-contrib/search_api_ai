@@ -51,17 +51,11 @@ class OpenRouterEmbeddingsEngine extends SearchApiAiEmbeddingsBase {
     $this->modelName = !empty($config['model_id']) ? $config['model_id'] : 'voyage-ai/voyage-3';
 
     // Resolve OpenRouter client via compatibility helper.
-    // Important: we resolve the client first and explicitly throw if
-    // resolution fails. This guarantees we never call the parent
-    // constructor with a NULL client. Order: (1) resolve client,
-    // (2) validate/throw on failure, (3) call parent with the valid
-    // client so base class has the dependency it expects.
     $stripped = NULL;
     $this->client = search_api_ai_openai_client_for_model('openrouter/' . $this->modelName, $stripped);
     if (!$this->client) {
       throw new Exception('Failed to initialize OpenRouter API client');
     }
-
     // Initialize parent with resolved client for base functionality.
     parent::__construct($config, $this->client);
   }

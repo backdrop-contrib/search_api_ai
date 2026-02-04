@@ -111,7 +111,7 @@ function search_api_ai_openai_embedding_engine_info() {
           $qualified_id = $provider_id . '/' . $model_id;
 
           $engines[$qualified_id] = array(
-            'label' => $model_name . ' (' . $provider_label . ')',
+            'label' => $model_name,  // Don't add provider suffix - grouping happens in options function
             'class' => 'OpenAiEmbeddingsEngine',
             'file' => 'includes/OpenAiEmbeddingsEngine.inc',
             'module' => 'search_api_ai_openai',
@@ -250,9 +250,9 @@ function search_api_ai_openai_embedding_engine_info() {
   }
 
   foreach ($models as $model_id => $model_name) {
-    // OpenAI 1.x: No provider prefix
+    // OpenAI 1.x: No provider prefix in ID, but grouping will detect "openai" pattern
     $engines[$model_id] = array(
-      'label' => t('OpenAI: @model', ['@model' => $model_name]),
+      'label' => $model_name,  // Just model name - no provider prefix
       'class' => 'OpenAiEmbeddingsEngine',
       'file' => 'includes/OpenAiEmbeddingsEngine.inc',
       'module' => 'search_api_ai_openai',

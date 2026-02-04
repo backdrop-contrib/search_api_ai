@@ -35,7 +35,7 @@ function search_api_ai_openrouter_embedding_engine_info() {
 
     foreach ($models as $model_id => $model_name) {
       $engines['openrouter/' . $model_id] = array(
-        'label' => t('OpenRouter: @model', array('@model' => $model_name)),
+        'label' => $model_name,  // Just model name - grouping happens via qualified ID
         'class' => 'OpenRouterEmbeddingsEngine',
         'file' => 'includes/OpenRouterEmbeddingsEngine.inc',
         'module' => 'search_api_ai_openrouter',

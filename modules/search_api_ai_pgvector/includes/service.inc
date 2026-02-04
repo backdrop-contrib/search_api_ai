@@ -201,9 +201,8 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     $index = $query->getIndex();
     $index_options = isset($index->options) ? $index->options : [];
 
-    $model = !empty($index_options['embedding_settings']['embeddings_engine'])
-      ? $index_options['embedding_settings']['embeddings_engine']
-      : (!empty($this->options['embedding_model']) ? $this->options['embedding_model'] : NULL);
+    // Model selection priority: index embedding setting → service `embedding_model` → service `embeddings_engine`.
+    $model = $index_options['embedding_settings']['embeddings_engine'] ?? $this->options['embedding_model'] ?? $this->options['embeddings_engine'] ?? NULL;
 
     if (empty($model)) {
       watchdog('search_api_ai_pgvector', 'No model configured!', [], WATCHDOG_ERROR);
@@ -330,7 +329,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
    * Ensure pgvector extension, table and index exist with correct dimension.
    */
   protected function ensureTable($schema, $table, $dimension) {
-    // Sanitize schema name to avoid SQL injection and ensure a valid identifier.
+    // Sanitize schema identifier to prevent SQL injection.
     $schema = preg_replace('/[^a-zA-Z0-9_]/', '', $schema);
     if ($schema === '') {
       $schema = 'public';
@@ -365,6 +364,7 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     else {
       // Validate dimension; if wrong, fail loudly (dropping data would be risky).
       try {
+        // For pgvector, dimension is stored in atttypmod; see pgvector docs: dim = atttypmod - 4.
         $dim = db_query("SELECT atttypmod - 4 FROM pg_attribute WHERE attrelid = :rel::regclass AND attname = 'vector'", [':rel' => $qualified])->fetchField();
       }
       catch (Exception $e) {
@@ -406,4 +406,3 @@ class PgvectorService extends SearchApiAbstractService implements SearchApiAiBac
     }
   }
 }
-
