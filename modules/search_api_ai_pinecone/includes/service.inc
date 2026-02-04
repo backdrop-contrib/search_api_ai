@@ -240,7 +240,7 @@ class PineconeService extends SearchApiAbstractService {
       ? (int) $index->options['embedding_settings']['embeddings_engine_configuration']['dimension']
       : search_api_ai_get_embedding_dimension();
 
-    if (empty($query_embedding) || !is_array($query_embedding) || count($query_embedding) !== $expected_dimension) {
+    if (!is_array($query_embedding) || count($query_embedding) !== $expected_dimension) {
       $actual_dimension = (is_array($query_embedding) && !empty($query_embedding)) ? count($query_embedding) : 0;
       watchdog(
         'search_api_ai_pinecone',
