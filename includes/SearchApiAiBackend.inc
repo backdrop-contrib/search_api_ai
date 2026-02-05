@@ -381,6 +381,9 @@ function search_api_ai_normalize_vectors($entity_type, $entity_id, $expected_dim
         'chunk_index' => isset($row['chunk_index']) ? (int)$row['chunk_index'] : 0,
         'values'      => array_values(array_map('floatval', $vec)),
         'metadata'    => [
+          'entity_type'    => $entity_type,
+          'entity_id'      => (int)$entity_id,
+          'nid'            => $entity_type === 'node' ? (int)$entity_id : NULL,
           'content'        => isset($row['content']) ? (string)$row['content'] : '',
           'title'          => $row['title'] ?? NULL,
           'search_api_url' => $row['search_api_url'] ?? NULL,
@@ -406,7 +409,10 @@ function search_api_ai_normalize_vectors($entity_type, $entity_id, $expected_dim
         'chunk_index' => 0,
         'values'      => array_values(array_map('floatval', $vec)),
         'metadata'    => [
-          'content' => isset($entry['content']) ? (string)$entry['content'] : '',
+          'entity_type' => $entity_type,
+          'entity_id'   => (int)$entity_id,
+          'nid'         => $entity_type === 'node' ? (int)$entity_id : NULL,
+          'content'     => isset($entry['content']) ? (string)$entry['content'] : '',
         ],
         'llm_vector_embedding' => $entry['llm_vector_embedding'] ?? TRUE,
       ];

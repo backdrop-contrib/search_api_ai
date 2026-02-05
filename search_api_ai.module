@@ -251,19 +251,15 @@ function search_api_ai_convert_embedding($value, $original_type, $type, array $e
   $engine_instance = NULL;
   $provider = NULL;
 
-  watchdog('search_api_ai', '🔍 Looking up engine for model: @model', ['@model' => $model], WATCHDOG_DEBUG);
-
   // Check if model has a provider prefix (e.g., "ollama/", "openai/")
   if (strpos($model, '/') !== FALSE) {
     list($provider, $model_name) = explode('/', $model, 2);
-    watchdog('search_api_ai', '🔍 Extracted provider: @provider, model_name: @name', ['@provider' => $provider, '@name' => $model_name], WATCHDOG_DEBUG);
   }
 
   // Only load engine for non-OpenAI providers (Ollama, OpenRouter)
   // OpenAI models will use the API directly
   if ($provider && $provider !== 'openai') {
     $engine_info = search_api_ai_embedding_engine_info();
-    watchdog('search_api_ai', '🔍 Available engines: @engines', ['@engines' => print_r(array_keys($engine_info), TRUE)], WATCHDOG_DEBUG);
 
     // Map provider names to engine IDs
     $provider_to_engine = [
@@ -272,31 +268,40 @@ function search_api_ai_convert_embedding($value, $original_type, $type, array $e
     ];
 
     $engine_id = isset($provider_to_engine[$provider]) ? $provider_to_engine[$provider] : $provider;
-    watchdog('search_api_ai', '🔍 Mapped to engine_id: @id', ['@id' => $engine_id], WATCHDOG_DEBUG);
 
     if (isset($engine_info[$engine_id])) {
       $info = $engine_info[$engine_id];
       $engine_class = $info['class'];
 
-      watchdog('search_api_ai', '🔍 Found engine class: @class', ['@class' => $engine_class], WATCHDOG_DEBUG);
-
       // Load the file if specified
       if (!empty($info['file']) && !empty($info['module'])) {
         $module_path = backdrop_get_path('module', $info['module']);
         require_once BACKDROP_ROOT . '/' . $module_path . '/' . $info['file'];
-        watchdog('search_api_ai', '✅ Loaded file: @file', ['@file' => $module_path . '/' . $info['file']], WATCHDOG_DEBUG);
       }
 
       if (class_exists($engine_class)) {
         // Extract just the model name without provider prefix
         $model_name_only = strpos($model, '/') !== FALSE ? explode('/', $model, 2)[1] : $model;
-        watchdog('search_api_ai', '✅ Instantiating @class with model: @model', ['@class' => $engine_class, '@model' => $model_name_only], WATCHDOG_DEBUG);
         $engine_instance = new $engine_class(['model_id' => $model_name_only]);
       } else {
         watchdog('search_api_ai', '❌ Class @class does not exist', ['@class' => $engine_class], WATCHDOG_ERROR);
       }
     } else {
-      watchdog('search_api_ai', '❌ No engine info found for engine_id: @id', ['@id' => $engine_id], WATCHDOG_ERROR);
+      // Fallback: maybe engines are registered per-model (e.g. 'ollama/<model>')
+      $per_model_key = $provider && !empty($model_name) ? $provider . '/' . $model_name : NULL;
+      if ($per_model_key && isset($engine_info[$per_model_key])) {
+        $info = $engine_info[$per_model_key];
+        $engine_class = $info['class'];
+
+        if (!empty($info['file']) && !empty($info['module'])) {
+          $module_path = backdrop_get_path('module', $info['module']);
+          require_once BACKDROP_ROOT . '/' . $module_path . '/' . $info['file'];
+        }
+
+        if (class_exists($engine_class)) {
+          $engine_instance = new $engine_class(['model_id' => $info['model_id'] ?? $model_name]);
+        }
+      }
     }
   }
 
@@ -962,10 +967,6 @@ function search_api_ai_search_api_index_items_alter(array &$items, SearchApiInde
       ], $context_metadata);
     }
   }
-
-  watchdog('search_api_ai', '✅ Finished altering index items for @index', [
-    '@index' => $index->machine_name
-  ], WATCHDOG_NOTICE);
 }
 
 /**
