@@ -380,12 +380,20 @@ function search_api_ai_normalize_vectors($entity_type, $entity_id, $expected_dim
         'field_name'  => $row['field_name'] ?? 'unknown',
         'chunk_index' => isset($row['chunk_index']) ? (int)$row['chunk_index'] : 0,
         'values'      => array_values(array_map('floatval', $vec)),
-        'metadata'    => [
-          'content'        => isset($row['content']) ? (string)$row['content'] : '',
-          'title'          => $row['title'] ?? NULL,
-          'search_api_url' => $row['search_api_url'] ?? NULL,
-          'url'            => $row['url'] ?? NULL,
-        ],
+        'metadata'    => (function() use ($entity_type, $entity_id, $row) {
+          $m = [
+            'entity_type'    => $entity_type,
+            'entity_id'      => (int)$entity_id,
+            'content'        => isset($row['content']) ? (string)$row['content'] : '',
+            'title'          => $row['title'] ?? NULL,
+            'search_api_url' => $row['search_api_url'] ?? NULL,
+            'url'            => $row['url'] ?? NULL,
+          ];
+          if ($entity_type === 'node') {
+            $m['nid'] = (int)$entity_id;
+          }
+          return array_filter($m, function($v) { return $v !== NULL; });
+        })(),
         'llm_vector_embedding' => $row['llm_vector_embedding'] ?? TRUE,
       ];
     }
@@ -405,9 +413,17 @@ function search_api_ai_normalize_vectors($entity_type, $entity_id, $expected_dim
         'field_name'  => $field_name,
         'chunk_index' => 0,
         'values'      => array_values(array_map('floatval', $vec)),
-        'metadata'    => [
-          'content' => isset($entry['content']) ? (string)$entry['content'] : '',
-        ],
+        'metadata'    => (function() use ($entity_type, $entity_id, $entry) {
+          $m = [
+            'entity_type' => $entity_type,
+            'entity_id'   => (int)$entity_id,
+            'content'     => isset($entry['content']) ? (string)$entry['content'] : '',
+          ];
+          if ($entity_type === 'node') {
+            $m['nid'] = (int)$entity_id;
+          }
+          return array_filter($m, function($v) { return $v !== NULL; });
+        })(),
         'llm_vector_embedding' => $entry['llm_vector_embedding'] ?? TRUE,
       ];
     }

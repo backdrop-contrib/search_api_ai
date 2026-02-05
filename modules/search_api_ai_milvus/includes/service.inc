@@ -238,7 +238,8 @@ class MilvusService extends SearchApiAbstractService implements SearchApiAiBacke
           'database'   => $database,
           'vectors'    => $batch_vectors,
         ]);
-        watchdog('search_api_ai_milvus', 'Indexed @count vectors into Milvus.', ['@count' => count($batch_vectors)], WATCHDOG_NOTICE);
+        //watchdog('search_api_ai_milvus', 'Indexed @count vectors into
+        // Milvus.', ['@count' => count($batch_vectors)], WATCHDOG_NOTICE);
       }
       catch (Exception $e) {
         watchdog('search_api_ai_milvus', '❌ Milvus indexing error: @message', ['@message' => $e->getMessage()], WATCHDOG_ERROR);

@@ -141,7 +141,8 @@ class PineconeService extends SearchApiAbstractService {
           'vectors'   => $batch_vectors,
           'namespace' => $namespace,
         ]);
-        watchdog('search_api_ai_pinecone', 'Indexed @count vectors.', ['@count' => count($batch_vectors)], WATCHDOG_NOTICE);
+        //watchdog('search_api_ai_pinecone', 'Indexed @count vectors.',
+        // ['@count' => count($batch_vectors)], WATCHDOG_NOTICE);
       }
       catch (\Exception $e) {
         watchdog('search_api_ai_pinecone', 'Upsert error: @m', ['@m' => $e->getMessage()], WATCHDOG_ERROR);
