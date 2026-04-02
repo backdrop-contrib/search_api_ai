@@ -1,0 +1,6 @@
+name: handle-comment
+description: Local action that parses comments for @copilot implement FILE blocks and opens PRs.
+inputs: {}
+runs:
+  using: "node20"
+  main: "index.js"
