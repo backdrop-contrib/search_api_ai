@@ -1,5 +1,20 @@
 # Search API AI
 
+> **Deprecated:** This module is no longer developed. It is replaced by
+> [`ai_search`](https://github.com/backdrop-contrib/ai_search), part of the [AI](https://github.com/backdrop-contrib/ai) suite for Backdrop CMS.
+
+Vector backends are separate modules: [`ai_search_provider_milvus`](https://github.com/backdrop-contrib/ai_search_provider_milvus), [`ai_search_provider_pinecone`](https://github.com/backdrop-contrib/ai_search_provider_pinecone), [`ai_search_provider_pgvector`](https://github.com/backdrop-contrib/ai_search_provider_pgvector), [`ai_search_provider_mariadb`](https://github.com/backdrop-contrib/ai_search_provider_mariadb).
+The `search_api_ai_*` submodules map to the matching `ai_search_*`
+submodules.
+
+If you have this module installed, upgrade to the replacement:
+
+1. Add the [AI](https://github.com/backdrop-contrib/ai) module and the replacement module(s) to your site.
+2. Enable **AI Upgrade UI** (`ai_upgrade`, included with AI).
+3. Run the upgrade at `admin/config/ai/upgrade` (or `bee ai-upgrade`). It
+   enables the replacements, copies your settings, permissions, blocks and
+   stored data, and disables this module.
+
 ## What does it do?
 Search API AI is a cutting-edge module that provides a collection of tools to integrate artificial intelligence (AI) and advanced search capabilities into your Drupal site. By leveraging the OpenAI Embedding API and storing vectors in Pinecone, this module enables you to create powerful, AI-driven search experiences for your users. With plans to support additional tools for creating embeddings and storing vectors, Search API AI is designed to be a flexible and extensible solution for your search needs.
 
